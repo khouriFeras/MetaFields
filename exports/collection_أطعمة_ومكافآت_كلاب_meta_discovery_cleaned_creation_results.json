@@ -1,0 +1,179 @@
+{
+  "discovered_fields": {
+    "product_title": {
+      "name": "عنوان المنتج",
+      "type": "single_line_text_field",
+      "description": "اسم المنتج كما يظهر للمستخدم",
+      "category": "brand",
+      "searchable": true,
+      "filterable": false,
+      "comparable": false,
+      "arabic_keywords": [
+        "عنوان",
+        "اسم المنتج"
+      ],
+      "example_values": [
+        "طعام جاف لجِراء الراعي الألماني لدعم المناعة ومضادات الأكسدة"
+      ]
+    },
+    "brand_name": {
+      "name": "اسم الماركة",
+      "type": "single_line_text_field",
+      "description": "اسم العلامة التجارية للمنتج",
+      "category": "brand",
+      "searchable": true,
+      "filterable": true,
+      "comparable": true,
+      "arabic_keywords": [
+        "ماركة",
+        "علامة تجارية"
+      ],
+      "example_values": [
+        "Royal Canin",
+        "Duvo"
+      ]
+    },
+    "product_type": {
+      "name": "نوع المنتج",
+      "type": "single_line_text_field",
+      "description": "نوع الطعام أو المكافأة",
+      "category": "feature",
+      "searchable": true,
+      "filterable": true,
+      "comparable": true,
+      "arabic_keywords": [
+        "نوع",
+        "فئة المنتج"
+      ],
+      "example_values": [
+        "طعام جاف",
+        "حليب بديل",
+        "مكافآت"
+      ]
+    },
+    "weight_kg": {
+      "name": "الوزن (كجم)",
+      "type": "number_decimal",
+      "description": "وزن المنتج بالكيلوجرام",
+      "category": "physical",
+      "searchable": true,
+      "filterable": true,
+      "comparable": true,
+      "arabic_keywords": [
+        "وزن",
+        "كجم"
+      ],
+      "example_values": [
+        1,
+        3,
+        4,
+        12
+      ]
+    },
+    "age_group": {
+      "name": "الفئة العمرية",
+      "type": "single_line_text_field",
+      "description": "الفئة العمرية المستهدفة للكلاب",
+      "category": "preference",
+      "searchable": true,
+      "filterable": true,
+      "comparable": true,
+      "arabic_keywords": [
+        "فئة عمرية",
+        "عمر"
+      ],
+      "example_values": [
+        "جراء",
+        "كلاب صغيرة",
+        "كلاب كبيرة"
+      ]
+    },
+    "target_weight_kg": {
+      "name": "الوزن المستهدف (كجم)",
+      "type": "list.single_line_text_field",
+      "description": "نطاق الوزن المستهدف للكلاب",
+      "category": "preference",
+      "searchable": true,
+      "filterable": true,
+      "comparable": true,
+      "arabic_keywords": [
+        "وزن مستهدف",
+        "نطاق الوزن"
+      ],
+      "example_values": [
+        "<10",
+        "26-44",
+        "10-26"
+      ]
+    },
+    "nutritional_benefits": {
+      "name": "الفوائد الغذائية",
+      "type": "list.single_line_text_field",
+      "description": "الفوائد الغذائية الرئيسية للمنتج",
+      "category": "feature",
+      "searchable": true,
+      "filterable": false,
+      "comparable": true,
+      "arabic_keywords": [
+        "فوائد غذائية",
+        "مكونات"
+      ],
+      "example_values": [
+        "يدعم المناعة",
+        "صحة الجلد",
+        "صحة المفاصل"
+      ]
+    },
+    "ingredients": {
+      "name": "المكونات",
+      "type": "list.single_line_text_field",
+      "description": "المكونات الرئيسية للمنتج",
+      "category": "feature",
+      "searchable": true,
+      "filterable": false,
+      "comparable": true,
+      "arabic_keywords": [
+        "مكونات",
+        "محتوى"
+      ],
+      "example_values": [
+        "دجاج",
+        "لحم ضأن",
+        "أوميغا-3"
+      ]
+    },
+    "special_features": {
+      "name": "ميزات خاصة",
+      "type": "list.single_line_text_field",
+      "description": "ميزات إضافية مثل خالي من النكهات أو مخصص للسلالات",
+      "category": "feature",
+      "searchable": true,
+      "filterable": false,
+      "comparable": true,
+      "arabic_keywords": [
+        "ميزات خاصة",
+        "خصائص إضافية"
+      ],
+      "example_values": [
+        "خالي من النكهات",
+        "مخصص للسلالات"
+      ]
+    }
+  },
+  "created_fields": {},
+  "failed_fields": {},
+  "skipped_fields": {
+    "product_title": "Already exists",
+    "brand_name": "Already exists",
+    "product_type": "Already exists",
+    "weight_kg": "Already exists",
+    "age_group": "Already exists",
+    "target_weight_kg": "Already exists",
+    "nutritional_benefits": "Already exists",
+    "ingredients": "Already exists",
+    "special_features": "Already exists"
+  },
+  "success_count": 0,
+  "failure_count": 0,
+  "skipped_count": 9
+}
