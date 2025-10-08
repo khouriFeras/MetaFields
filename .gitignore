@@ -1,0 +1,56 @@
+# Environment variables
+.env
+*.env
+
+# Python
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.py[cod]
+*$py.class
+
+# Exports and data (all analysis outputs)
+exports/
+data/
+*.xlsx
+*.csv
+*.json
+
+# Debug and test files
+*.log
+*.txt
+debug_*.py
+check_*.py
+test_*.py
+verify_*.py
+simple_*.py
+
+# IDE and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# OS specific
+.DS_Store
+Thumbs.db
+desktop.ini
+*.bak
+
+# Temporary files
+*.tmp
+~$*
+.cache/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/

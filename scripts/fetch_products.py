@@ -69,6 +69,31 @@ query GetProducts($first: Int!, $after: String) {
         updatedAt
         status
         publishedAt
+        priceRange {
+          minVariantPrice {
+            amount
+            currencyCode
+          }
+          maxVariantPrice {
+            amount
+            currencyCode
+          }
+        }
+        variants(first: 10) {
+          edges {
+            node {
+              id
+              title
+              price
+              compareAtPrice
+              availableForSale
+              selectedOptions {
+                name
+                value
+              }
+            }
+          }
+        }
         metafields(first: 50, namespace: "spec") {
           edges {
             node {
@@ -100,6 +125,31 @@ query GetProductByHandle($handle: String!) {
     updatedAt
     status
     publishedAt
+    priceRange {
+      minVariantPrice {
+        amount
+        currencyCode
+      }
+      maxVariantPrice {
+        amount
+        currencyCode
+      }
+    }
+    variants(first: 10) {
+      edges {
+        node {
+          id
+          title
+          price
+          compareAtPrice
+          availableForSale
+          selectedOptions {
+            name
+            value
+          }
+        }
+      }
+    }
     metafields(first: 50, namespace: "spec") {
       edges {
         node {
@@ -129,6 +179,31 @@ query GetProductById($id: ID!) {
     updatedAt
     status
     publishedAt
+    priceRange {
+      minVariantPrice {
+        amount
+        currencyCode
+      }
+      maxVariantPrice {
+        amount
+        currencyCode
+      }
+    }
+    variants(first: 10) {
+      edges {
+        node {
+          id
+          title
+          price
+          compareAtPrice
+          availableForSale
+          selectedOptions {
+            name
+            value
+          }
+        }
+      }
+    }
     metafields(first: 50, namespace: "spec") {
       edges {
         node {
@@ -164,6 +239,31 @@ query GetProductsByTag($tag: String!, $first: Int!, $after: String) {
         updatedAt
         status
         publishedAt
+        priceRange {
+          minVariantPrice {
+            amount
+            currencyCode
+          }
+          maxVariantPrice {
+            amount
+            currencyCode
+          }
+        }
+        variants(first: 10) {
+          edges {
+            node {
+              id
+              title
+              price
+              compareAtPrice
+              availableForSale
+              selectedOptions {
+                name
+                value
+              }
+            }
+          }
+        }
         metafields(first: 50, namespace: "spec") {
           edges {
             node {
@@ -221,6 +321,31 @@ query GetCollectionProducts($id: ID!, $first: Int!, $after: String) {
           updatedAt
           status
           publishedAt
+          priceRange {
+            minVariantPrice {
+              amount
+              currencyCode
+            }
+            maxVariantPrice {
+              amount
+              currencyCode
+            }
+          }
+          variants(first: 10) {
+            edges {
+              node {
+                id
+                title
+                price
+                compareAtPrice
+                availableForSale
+                selectedOptions {
+                  name
+                  value
+                }
+              }
+            }
+          }
           metafields(first: 50, namespace: "spec") {
             edges {
               node {
@@ -443,8 +568,67 @@ def process_metafields(product: Dict) -> Dict:
     return metafields_data
 
 
+def process_variants(product: Dict) -> Dict:
+    """Process variants data and add pricing information to product."""
+    variants_data = []
+    pricing_info = {
+        "min_price": None,
+        "max_price": None,
+        "currency": None,
+        "has_compare_at_price": False,
+        "total_variants": 0,
+        "available_variants": 0
+    }
+    
+    if "variants" in product and "edges" in product["variants"]:
+        prices = []
+        for edge in product["variants"]["edges"]:
+            variant = edge["node"]
+            variant_data = {
+                "id": variant["id"],
+                "title": variant["title"],
+                "price": float(variant["price"]) if variant["price"] else None,
+                "compare_at_price": float(variant["compareAtPrice"]) if variant["compareAtPrice"] else None,
+                "available_for_sale": variant["availableForSale"],
+                "selected_options": variant.get("selectedOptions", [])
+            }
+            variants_data.append(variant_data)
+            
+            # Collect pricing info
+            if variant_data["price"]:
+                prices.append(variant_data["price"])
+                if variant_data["available_for_sale"]:
+                    pricing_info["available_variants"] += 1
+                
+                if variant_data["compare_at_price"]:
+                    pricing_info["has_compare_at_price"] = True
+            
+            pricing_info["total_variants"] += 1
+        
+        # Calculate min/max prices
+        if prices:
+            pricing_info["min_price"] = min(prices)
+            pricing_info["max_price"] = max(prices)
+    
+    # Add price range from product level
+    if "priceRange" in product and product["priceRange"]:
+        price_range = product["priceRange"]
+        if price_range.get("minVariantPrice"):
+            pricing_info["min_price"] = float(price_range["minVariantPrice"]["amount"])
+            pricing_info["currency"] = price_range["minVariantPrice"]["currencyCode"]
+        if price_range.get("maxVariantPrice"):
+            pricing_info["max_price"] = float(price_range["maxVariantPrice"]["amount"])
+            if not pricing_info["currency"]:
+                pricing_info["currency"] = price_range["maxVariantPrice"]["currencyCode"]
+    
+    return {
+        "variants": variants_data,
+        "pricing": pricing_info
+    }
+
+
 def add_language_markers(products: List[Dict]) -> List[Dict]:
-    """Add language markers and process metafields for products."""
+    """Add language markers and process metafields and variants for products."""
     products_with_lang = []
     
     for product in products:
@@ -458,14 +642,33 @@ def add_language_markers(products: List[Dict]) -> List[Dict]:
         metafields_data = process_metafields(product)
         product_with_lang["metafields"] = metafields_data
         
+        # Process variants and pricing
+        variants_data = process_variants(product)
+        product_with_lang["variants"] = variants_data["variants"]
+        product_with_lang["pricing"] = variants_data["pricing"]
+        
+        # Add simplified price range for easy access
+        pricing = variants_data["pricing"]
+        if pricing["min_price"] and pricing["max_price"]:
+            if pricing["min_price"] == pricing["max_price"]:
+                product_with_lang["priceRange"] = f"{pricing['currency']} {pricing['min_price']:.2f}"
+            else:
+                product_with_lang["priceRange"] = f"{pricing['currency']} {pricing['min_price']:.2f} - {pricing['max_price']:.2f}"
+        else:
+            product_with_lang["priceRange"] = "Price not available"
+        
         products_with_lang.append(product_with_lang)
     
     return products_with_lang
 
 
-def ensure_output_dir(output_dir: str) -> Path:
-    """Ensure output directory exists."""
-    path = Path(output_dir)
+def ensure_output_dir(output_dir: str, subfolder: str = None) -> Path:
+    """Ensure output directory exists, optionally with subfolder."""
+    if subfolder:
+        # Create subfolder for this specific collection/tag
+        path = Path(output_dir) / subfolder
+    else:
+        path = Path(output_dir)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -597,14 +800,15 @@ Examples:
         sys.exit(1)
     
     validate_environment()
-    output_dir = ensure_output_dir(args.output_dir)
     
-    # Fetch products based on command
+    # Fetch products based on command and determine subfolder
     products = []
+    subfolder_name = None
     
     if args.command == 'all':
         products = fetch_all_products()
         filename_prefix = "products"
+        subfolder_name = "all_products"
         
     elif args.command == 'single':
         if args.handle:
@@ -628,29 +832,37 @@ Examples:
         products = fetch_products_by_tag(args.name)
         safe_name = args.name.replace(' ', '_').replace('/', '_')
         filename_prefix = f"products_tag_{safe_name}"
+        subfolder_name = f"tag_{safe_name}"
         
     elif args.command == 'collection':
         if args.handle:
             products = fetch_collection_products(args.handle)
             safe_name = args.handle.replace(' ', '_').replace('/', '_')
             filename_prefix = f"collection_{safe_name}"
+            subfolder_name = safe_name
         elif args.title:
             products = fetch_collection_products(args.title)
             safe_name = args.title.replace(' ', '_').replace('/', '_')
             filename_prefix = f"collection_{safe_name}"
+            subfolder_name = safe_name
         elif args.id:
             products = fetch_collection_products(args.id)
-            filename_prefix = f"collection_{args.id.replace('gid://shopify/Collection/', '')}"
+            safe_name = args.id.replace('gid://shopify/Collection/', '')
+            filename_prefix = f"collection_{safe_name}"
+            subfolder_name = safe_name
     
     if not products:
         print("No products found.")
         sys.exit(1)
     
+    # Create output directory with subfolder
+    output_dir = ensure_output_dir(args.output_dir, subfolder_name)
+    
     # Add language markers and process metafields
     products_with_lang = add_language_markers(products)
     
     # Export files
-    print(f"\nExporting {len(products)} products...")
+    print(f"\nExporting {len(products)} products to: {output_dir}")
     
     # Raw JSON
     raw_file = output_dir / f"{filename_prefix}_raw.json"
@@ -674,7 +886,7 @@ Examples:
         write_xlsx(xlsx_file, products_with_lang)
         print(f"  - {xlsx_file}")
     
-    print(f"\n✅ Export complete! {len(products)} products exported.")
+    print(f"\nExport complete! {len(products)} products exported.")
 
 
 if __name__ == "__main__":
