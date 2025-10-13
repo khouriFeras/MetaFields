@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import openai
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 load_dotenv()
 
@@ -57,16 +59,16 @@ def extract_product_info(product: Dict) -> str:
     vendor = product.get('vendor', 'N/A')
     tags = ', '.join(product.get('tags', []))
     
-    # Clean description
+    # Clean description (full description for complete spec extraction)
     description_html = product.get('descriptionHtml', '')
     description = clean_html(description_html)
-    if len(description) > 500:
-        description = description[:500] + "..."
+    # No truncation - send full description to capture all specs
+    # Important for fields like Energy efficiency class (HDR/SDR)
     
-    # Get variant information
+    # Get variant information (ALL variants for complete spec extraction)
     variants_info = []
     variants = product.get('variants', [])
-    for variant in variants[:3]:  # Max 3 variants
+    for variant in variants:  # All variants (captures all sizes, colors, options)
         v_title = variant.get('title', 'Default')
         v_price = variant.get('price', 'N/A')
         options = variant.get('selected_options', [])
@@ -78,14 +80,26 @@ def extract_product_info(product: Dict) -> str:
     
     variants_text = "\n  ".join(variants_info) if variants_info else "No variants"
     
+    # Get existing metafields (might have additional context)
+    existing_metafields = product.get('metafields', {})
+    metafields_text = ""
+    if existing_metafields and len(existing_metafields) > 0:
+        mf_items = [f"{k}: {v}" for k, v in list(existing_metafields.items())[:5]]
+        metafields_text = f"\nExisting Metafields: {', '.join(mf_items)}"
+    
+    # Get pricing info
+    pricing = product.get('pricing', {})
+    price_info = product.get('priceRange', 'N/A')
+    
     product_info = f"""
 Title: {title}
 Type: {product_type}
 Vendor: {vendor}
+Price Range: {price_info}
 Tags: {tags}
 Description: {description}
 Variants:
-  {variants_text}
+  {variants_text}{metafields_text}
 """
     
     return product_info.strip()
@@ -112,17 +126,28 @@ def fill_metafields_batch(
     print(f"\n Filling metafields for {len(products)} products using {model}...")
     print(f" Category: {category_name}")
     print(f"  Metafields to fill: {len(metafield_definitions)}")
-    # Prepare metafield definitions for prompt
+    # Prepare metafield definitions for prompt (with available values for better selection)
     metafield_descriptions = []
     for mf in metafield_definitions:
         validations = ""
         if mf.get('validations'):
             val_list = [f"{v['name']}: {v['value']}" for v in mf['validations']]
             validations = f" (Validations: {', '.join(val_list)})"
+        
+        # Include available values for list fields to help AI choose correctly
+        values_info = ""
+        if mf.get('values') and len(mf['values']) > 0:
+            # Show first 15 values (keep prompt reasonable)
+            value_sample = mf['values'][:15]
+            values_str = ', '.join(value_sample)
+            if len(mf['values']) > 15:
+                values_str += f" (and {len(mf['values'])-15} more)"
+            values_info = f"\n  Available values: {values_str}"
+        
         desc = mf.get('description', '')
         metafield_descriptions.append(
             f"- {mf['name']} (key: {mf['key']}, type: {mf['type']}){validations}\n"
-            f"  Description: {desc if desc else 'No description'}"
+            f"  Description: {desc if desc else 'No description'}{values_info}"
         )
     metafields_text = "\n".join(metafield_descriptions)
     client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -156,14 +181,20 @@ PRODUCTS:
 {products_text}
 
 INSTRUCTIONS:
-1. Analyze each product carefully
-2. Fill ALL metafields with appropriate values based on product information
-3. Extract values from title, description, variants, and tags
-4. If a value cannot be determined, use null
-5. For single_line_text_field: use short text (max 100 chars)
-6. For list.single_line_text_field: use array of strings
-7. Follow all validations and constraints
-8. Be accurate and consistent
+1. READ THE ENTIRE DESCRIPTION CAREFULLY - Technical specs are often mentioned throughout
+2. For list.single_line_text_field: SELECT from "Available values" provided above
+3. Extract values from: Title, FULL Description (read all of it!), Variants, Tags
+4. Look for technical specifications like:
+   - Energy efficiency, HDR/SDR ratings (often in descriptions)
+   - Screen size, resolution (often in variants or title)
+   - Color, material (often in variants)
+   - Audio technology, connectivity (in descriptions)
+5. For fields with available values: ONLY use values from the list
+6. IMPORTANT: Avoid selecting "Other" - try to find the closest specific match
+7. Match variations to standard values (e.g., "Ultra HD" = "4K", "Stereo" might match a specific audio tech)
+8. If truly cannot determine a value, use null (NOT "Other")
+9. Only use "Other" if the product explicitly has a unique feature not in the list
+10. Be thorough and read ALL product information before deciding
 
 Return ONLY valid JSON in this EXACT format:
 {{
@@ -183,20 +214,48 @@ Return ONLY valid JSON in this EXACT format:
 Return only the JSON, no other text."""
         
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
+            # GPT-5 models have different API parameters than GPT-4
+            api_params = {
+                "model": model,
+                "messages": [
                     {
                         "role": "system",
                         "content": "You are a product data expert. You analyze products and extract metafield values accurately. You always return valid JSON."
                     },
                     {"role": "user", "content": prompt}
-                ],
-                temperature=0.2,
-                max_tokens=4000
-            )
+                ]
+            }
             
-            result_text = response.choices[0].message.content.strip()
+            # GPT-5 models use max_completion_tokens and don't support custom temperature
+            if model.startswith('gpt-5'):
+                # GPT-5 uses reasoning tokens + output tokens, so we need more
+                # For gpt-5-nano: reasoning (~4000) + output (~2000) = 6000+ total
+                api_params["max_completion_tokens"] = 12000
+                # temperature=1 is default for GPT-5, don't set it
+            else:
+                api_params["max_tokens"] = 4000
+                api_params["temperature"] = 0.2
+            
+            response = client.chat.completions.create(**api_params)
+            
+            result_text = response.choices[0].message.content
+            
+            # Handle empty responses (GPT-5 reasoning token issue)
+            if not result_text or len(result_text.strip()) == 0:
+                print(f"    ⚠️  Empty response - GPT-5 used all tokens for reasoning")
+                print(f"    💡 Increasing max_completion_tokens to 16000 and retrying...")
+                
+                # Retry with more tokens
+                if model.startswith('gpt-5'):
+                    api_params["max_completion_tokens"] = 16000
+                    response = client.chat.completions.create(**api_params)
+                    result_text = response.choices[0].message.content
+                    
+                    if not result_text or len(result_text.strip()) == 0:
+                        print(f"    ❌ Still empty after retry - skipping batch")
+                        raise ValueError("Empty response even with 16000 tokens")
+            
+            result_text = result_text.strip()
             
             # Remove markdown code blocks if present
             if result_text.startswith("```"):
@@ -227,6 +286,221 @@ Return only the JSON, no other text."""
     return results
 
 
+def process_single_product(
+    product: Dict,
+    product_index: int,
+    total_products: int,
+    metafield_definitions: List[Dict],
+    metafields_text: str,
+    category_name: str,
+    model: str
+) -> Dict:
+    """
+    Process a single product with metafield filling (for parallel processing).
+    
+    Returns:
+        Product with filled category_metafields
+    """
+    print(f"  [{product_index}/{total_products}] {product.get('title', 'N/A')[:60]}...")
+    
+    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    product_info = extract_product_info(product)
+    
+    # Create prompt
+    prompt = f"""You are filling Shopify category metafields for a product.
+
+CATEGORY: {category_name}
+
+METAFIELDS TO FILL:
+{metafields_text}
+
+PRODUCT:
+{product_info}
+
+INSTRUCTIONS:
+1. READ THE ENTIRE DESCRIPTION CAREFULLY - Technical specs are often mentioned throughout
+2. For list.single_line_text_field: SELECT from "Available values" provided above
+3. Extract values from: Title, FULL Description (read all of it!), Variants, Tags
+4. Look for technical specifications like:
+   - Energy efficiency, HDR/SDR ratings (often in descriptions)
+   - Screen size, resolution (often in variants or title)
+   - Color, material (often in variants)
+   - Audio technology, connectivity (in descriptions)
+5. For fields with available values: ONLY use values from the list
+6. IMPORTANT: Avoid selecting "Other" - try to find the closest specific match
+7. Match variations to standard values (e.g., "Ultra HD" = "4K", "Stereo" might match a specific audio tech)
+8. If truly cannot determine a value, use null (NOT "Other")
+9. Only use "Other" if the product explicitly has a unique feature not in the list
+10. Be thorough and read ALL product information before deciding
+
+Return ONLY valid JSON in this EXACT format:
+{{
+  "metafields": {{
+    "metafield_key1": "value1",
+    "metafield_key2": ["value1", "value2"],
+    "metafield_key3": null
+  }}
+}}
+
+Return only the JSON, no other text."""
+    
+    try:
+        # GPT-5 models have different API parameters than GPT-4
+        api_params = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a product data expert. You analyze products and extract metafield values accurately. You always return valid JSON."
+                },
+                {"role": "user", "content": prompt}
+            ]
+        }
+        
+        # GPT-5 models use max_completion_tokens and don't support custom temperature
+        if model.startswith('gpt-5'):
+            # GPT-5 uses reasoning tokens, give plenty of room
+            api_params["max_completion_tokens"] = 8000
+        else:
+            api_params["max_tokens"] = 1000
+            api_params["temperature"] = 0.2
+        
+        response = client.chat.completions.create(**api_params)
+        result_text = response.choices[0].message.content
+        
+        # Handle empty responses
+        if not result_text or len(result_text.strip()) == 0:
+            print(f"    ⚠️  Empty response - retrying with more tokens...")
+            if model.startswith('gpt-5'):
+                api_params["max_completion_tokens"] = 16000
+                response = client.chat.completions.create(**api_params)
+                result_text = response.choices[0].message.content
+        
+        if not result_text:
+            raise ValueError("Empty response from API")
+            
+        result_text = result_text.strip()
+        
+        # Remove markdown code blocks if present
+        if result_text.startswith("```"):
+            result_text = result_text.split("```")[1]
+            if result_text.startswith("json"):
+                result_text = result_text[4:]
+            result_text = result_text.strip()
+        
+        result = json.loads(result_text)
+        
+        product_copy = product.copy()
+        product_copy["category_metafields"] = result.get("metafields", {})
+        
+        # Show filled count
+        filled_count = sum(1 for v in result.get("metafields", {}).values() if v is not None)
+        print(f"    ✅ Filled {filled_count}/{len(metafield_definitions)} metafields")
+        
+        return product_copy
+        
+    except Exception as e:
+        print(f"    ❌ Error: {e}")
+        product_copy = product.copy()
+        product_copy["category_metafields"] = {}
+        return product_copy
+
+
+def fill_metafields_parallel(
+    products: List[Dict],
+    metafield_definitions: List[Dict],
+    category_name: str,
+    model: str = "gpt-5-nano",
+    max_workers: int = 5
+) -> List[Dict]:
+    """
+    Fill metafields for products using parallel workers (FAST!).
+    
+    Args:
+        products: List of products to process
+        metafield_definitions: List of metafield definitions from category
+        category_name: Name of the Shopify category
+        model: OpenAI model to use
+        max_workers: Number of parallel workers (default: 5)
+        
+    Returns:
+        List of products with filled metafields
+    """
+    print(f"\n🤖 Filling metafields for {len(products)} products using {model}...")
+    print(f"⚡ Parallel mode with {max_workers} workers (FAST!)")
+    print(f"📋 Category: {category_name}")
+    print(f"🏷️  Metafields to fill: {len(metafield_definitions)}")
+    
+    # Prepare metafield definitions text (reuse for all workers)
+    metafield_descriptions = []
+    for mf in metafield_definitions:
+        validations = ""
+        if mf.get('validations'):
+            val_list = [f"{v['name']}: {v['value']}" for v in mf['validations']]
+            validations = f" (Validations: {', '.join(val_list)})"
+        
+        # Include available values
+        values_info = ""
+        if mf.get('values') and len(mf['values']) > 0:
+            value_sample = mf['values'][:15]
+            values_str = ', '.join(value_sample)
+            if len(mf['values']) > 15:
+                values_str += f" (and {len(mf['values'])-15} more)"
+            values_info = f"\n  Available values: {values_str}"
+        
+        desc = mf.get('description', '')
+        metafield_descriptions.append(
+            f"- {mf['name']} (key: {mf['key']}, type: {mf['type']}){validations}\n"
+            f"  Description: {desc if desc else 'No description'}{values_info}"
+        )
+    
+    metafields_text = "\n".join(metafield_descriptions)
+    
+    # Process products in parallel
+    start_time = time.time()
+    results = [None] * len(products)  # Preserve order
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_index = {
+            executor.submit(
+                process_single_product,
+                product,
+                i + 1,
+                len(products),
+                metafield_definitions,
+                metafields_text,
+                category_name,
+                model
+            ): i
+            for i, product in enumerate(products)
+        }
+        
+        # Collect results as they complete
+        completed = 0
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                result = future.result()
+                results[index] = result
+                completed += 1
+                
+                if completed % 10 == 0:
+                    elapsed = time.time() - start_time
+                    rate = completed / elapsed
+                    remaining = (len(products) - completed) / rate
+                    print(f"\n  📊 Progress: {completed}/{len(products)} ({completed/len(products)*100:.1f}%) - ETA: {remaining:.0f}s")
+            except Exception as e:
+                print(f"    ❌ Worker error for product {index}: {e}")
+                results[index] = products[index].copy()
+                results[index]["category_metafields"] = {}
+    
+    elapsed = time.time() - start_time
+    print(f"\n  ⚡ Completed in {elapsed:.1f}s ({len(products)/elapsed:.1f} products/sec)")
+    
+    return results
+
+
 def fill_metafields_single(
     products: List[Dict],
     metafield_definitions: List[Dict],
@@ -249,7 +523,7 @@ def fill_metafields_single(
     print(f" Category: {category_name}")
     print(f"  Metafields to fill: {len(metafield_definitions)}")
     
-    # Prepare metafield definitions for prompt
+    # Prepare metafield definitions for prompt (with available values)
     metafield_descriptions = []
     for mf in metafield_definitions:
         validations = ""
@@ -257,10 +531,19 @@ def fill_metafields_single(
             val_list = [f"{v['name']}: {v['value']}" for v in mf['validations']]
             validations = f" (Validations: {', '.join(val_list)})"
         
+        # Include available values for list fields
+        values_info = ""
+        if mf.get('values') and len(mf['values']) > 0:
+            value_sample = mf['values'][:15]
+            values_str = ', '.join(value_sample)
+            if len(mf['values']) > 15:
+                values_str += f" (and {len(mf['values'])-15} more)"
+            values_info = f"\n  Available values: {values_str}"
+        
         desc = mf.get('description', '')
         metafield_descriptions.append(
             f"- {mf['name']} (key: {mf['key']}, type: {mf['type']}){validations}\n"
-            f"  Description: {desc if desc else 'No description'}"
+            f"  Description: {desc if desc else 'No description'}{values_info}"
         )
     
     metafields_text = "\n".join(metafield_descriptions)
@@ -286,14 +569,20 @@ PRODUCT:
 {product_info}
 
 INSTRUCTIONS:
-1. Analyze the product carefully
-2. Fill ALL metafields with appropriate values based on product information
-3. Extract values from title, description, variants, and tags
-4. If a value cannot be determined, use null
-5. For single_line_text_field: use short text (max 100 chars)
-6. For list.single_line_text_field: use array of strings
-7. Follow all validations and constraints
-8. Be accurate and specific
+1. READ THE ENTIRE DESCRIPTION CAREFULLY - Technical specs are often mentioned throughout
+2. For list.single_line_text_field: SELECT from "Available values" provided above
+3. Extract values from: Title, FULL Description (read all of it!), Variants, Tags
+4. Look for technical specifications like:
+   - Energy efficiency, HDR/SDR ratings (often in descriptions)
+   - Screen size, resolution (often in variants or title)
+   - Color, material (often in variants)
+   - Audio technology, connectivity (in descriptions)
+5. For fields with available values: ONLY use values from the list
+6. IMPORTANT: Avoid selecting "Other" - try to find the closest specific match
+7. Match variations to standard values (e.g., "Ultra HD" = "4K", "Stereo" might match a specific audio tech)
+8. If truly cannot determine a value, use null (NOT "Other")
+9. Only use "Other" if the product explicitly has a unique feature not in the list
+10. Be thorough and read ALL product information before deciding
 
 Return ONLY valid JSON in this EXACT format:
 {{
@@ -307,18 +596,28 @@ Return ONLY valid JSON in this EXACT format:
 Return only the JSON, no other text."""
         
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
+            # GPT-5 models have different API parameters than GPT-4
+            api_params = {
+                "model": model,
+                "messages": [
                     {
                         "role": "system",
                         "content": "You are a product data expert. You analyze products and extract metafield values accurately. You always return valid JSON."
                     },
                     {"role": "user", "content": prompt}
-                ],
-                temperature=0.2,
-                max_tokens=1000
-            )
+                ]
+            }
+            
+            # GPT-5 models use max_completion_tokens and don't support custom temperature
+            if model.startswith('gpt-5'):
+                # GPT-5 uses reasoning tokens + output tokens, so we need more
+                api_params["max_completion_tokens"] = 4000
+                # temperature=1 is default for GPT-5, don't set it
+            else:
+                api_params["max_tokens"] = 1000
+                api_params["temperature"] = 0.2
+            
+            response = client.chat.completions.create(**api_params)
             
             result_text = response.choices[0].message.content.strip()
             
@@ -375,9 +674,11 @@ Examples:
     parser.add_argument('--products', required=True, help='Path to products JSON file')
     parser.add_argument('--mapping', required=True, help='Path to category mapping JSON file')
     parser.add_argument('--output', required=True, help='Output file path for products with metafields')
-    parser.add_argument('--model', default='gpt-4o', help='OpenAI model to use (default: gpt-4o)')
-    parser.add_argument('--mode', choices=['batch', 'single'], default='batch', help='Processing mode (default: batch)')
+    parser.add_argument('--model', default='gpt-4o-mini', help='OpenAI model to use (default: gpt-4o-mini)')
+    parser.add_argument('--mode', choices=['batch', 'single', 'parallel'], default='parallel', help='Processing mode (default: parallel)')
     parser.add_argument('--batch-size', type=int, default=10, help='Batch size for batch mode (default: 10)')
+    parser.add_argument('--workers', type=int, default=5, help='Number of parallel workers (default: 5)')
+    parser.add_argument('--limit', type=int, help='Limit number of products to process (for testing, e.g., --limit 20)')
     
     args = parser.parse_args()
     
@@ -388,7 +689,13 @@ Examples:
     # Load products
     print(f"Loading products from: {args.products}")
     products = load_json(args.products)
-    print(f"  Loaded {len(products)} products")
+    
+    # Limit products if specified (for testing)
+    if args.limit and args.limit < len(products):
+        print(f"  Loaded {len(products)} products, limiting to first {args.limit} for testing")
+        products = products[:args.limit]
+    else:
+        print(f"  Loaded {len(products)} products")
     
     # Load category mapping
     print(f"\n Loading category mapping from: {args.mapping}")
@@ -402,14 +709,22 @@ Examples:
         raise SystemExit("No metafield definitions found in mapping file")
     
     # Fill metafields
-    if args.mode == 'single':
+    if args.mode == 'parallel':
+        results = fill_metafields_parallel(
+            products=products,
+            metafield_definitions=metafield_definitions,
+            category_name=category_name,
+            model=args.model,
+            max_workers=args.workers
+        )
+    elif args.mode == 'single':
         results = fill_metafields_single(
             products=products,
             metafield_definitions=metafield_definitions,
             category_name=category_name,
             model=args.model
         )
-    else:
+    else:  # batch mode
         results = fill_metafields_batch(
             products=products,
             metafield_definitions=metafield_definitions,

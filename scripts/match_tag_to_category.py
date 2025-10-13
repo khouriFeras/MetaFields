@@ -166,15 +166,25 @@ Return only the JSON, no other text."""
     try:
         client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
+        # GPT-5 models have different API parameters than GPT-4
+        api_params = {
+            "model": model,
+            "messages": [
                 {"role": "system", "content": "You are a product categorization expert. You always return valid JSON."},
                 {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=500
-        )
+            ]
+        }
+        
+        # GPT-5 models use max_completion_tokens and don't support custom temperature
+        if model.startswith('gpt-5'):
+            # GPT-5 uses reasoning tokens, so increase limit
+            api_params["max_completion_tokens"] = 1500
+            # temperature=1 is default for GPT-5, don't set it
+        else:
+            api_params["max_tokens"] = 500
+            api_params["temperature"] = 0.3
+        
+        response = client.chat.completions.create(**api_params)
         
         result_text = response.choices[0].message.content.strip()
         

@@ -230,17 +230,30 @@ python scripts/category_metafields_workflow.py --tag YOUR_TAG --batch-size 5
 
 ---
 
-## 💰 Cost Estimate
+## 💰 Cost Estimate (Optimized)
 
-**Per 100 Products:**
+**Per 200 Products (Using gpt-4o-mini - Default):**
 
-- Taxonomy fetch: $0.10 (one time only)
-- Category match: $0.02
-- Metafield filling: $0.30
-- **Total: ~$0.40-0.50** for first tag
-- **Then: ~$0.30** per additional tag
+- Taxonomy fetch: $0 (downloads from GitHub)
+- Category match: $0.003
+- Metafield filling: $0.08
+- **Total: ~$0.08** per tag
 
-**One-time setup costs amortized across all analyses!**
+**Per 200 Products (Using gpt-5-nano - Recommended for max savings):**
+
+- Taxonomy fetch: $0 (downloads from GitHub)
+- Category match: $0.001
+- Metafield filling: $0.03
+- **Total: ~$0.03** per tag 🔥
+
+**Cost Optimizations Applied:**
+
+- ✅ Default model: gpt-4o-mini (85% cheaper than gpt-4o)
+- ✅ Batch size: 20 (50% fewer API calls)
+- ✅ Description length: 300 chars (token optimization)
+- ✅ Variants: 2 per product (token optimization)
+
+**Use gpt-5-nano for maximum savings: `--model gpt-5-nano`**
 
 ---
 

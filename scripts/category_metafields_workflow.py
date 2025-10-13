@@ -82,11 +82,17 @@ Examples:
     )
     
     parser.add_argument('--tag', help='Product tag to analyze')
-    parser.add_argument('--model', default='gpt-4o', help='OpenAI model to use (default: gpt-4o)')
-    parser.add_argument('--mode', choices=['batch', 'single'], default='batch', 
-                       help='Metafield filling mode (default: batch)')
-    parser.add_argument('--batch-size', type=int, default=10, 
-                       help='Batch size for batch mode (default: 10)')
+    parser.add_argument('--model', default='gpt-4o-mini', 
+                       choices=['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4o', 'gpt-4o-mini'],
+                       help='OpenAI model to use (default: gpt-4o-mini - best quality/cost balance, avoids "Other" selections)')
+    parser.add_argument('--mode', choices=['batch', 'single', 'parallel'], default='parallel', 
+                       help='Metafield filling mode (default: parallel - FASTEST)')
+    parser.add_argument('--batch-size', type=int, default=1, 
+                       help='Batch size for batch mode (default: 1 for maximum accuracy with gpt-5-nano)')
+    parser.add_argument('--workers', type=int, default=5, 
+                       help='Number of parallel workers (default: 5, use 3-10 depending on API limits)')
+    parser.add_argument('--limit', type=int, 
+                       help='Limit number of products to process (for testing, e.g., --limit 20)')
     parser.add_argument('--skip-fetch', action='store_true', 
                        help='Skip fetching products (use existing data)')
     parser.add_argument('--fetch-taxonomy-only', action='store_true',
@@ -133,26 +139,40 @@ Examples:
         if not run_command(cmd, "Fetch Shopify Taxonomy"):
             raise SystemExit(" Failed to fetch taxonomy. Please try again.")
     
-    # Setup paths
+    # Setup paths with timestamp to avoid overwriting
+    import datetime
     safe_tag = args.tag.replace(' ', '_').replace('/', '_')
-    tag_dir = Path(args.output_dir) / f"tag_{safe_tag}"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Create unique directory with model name and timestamp
+    tag_dir = Path(args.output_dir) / f"tag_{safe_tag}" / f"{args.model}_{timestamp}"
     tag_dir.mkdir(parents=True, exist_ok=True)
     
-    products_file = tag_dir / f"products_tag_{safe_tag}_with_lang.json"
+    # Check if products exist in parent directory
+    parent_dir = Path(args.output_dir) / f"tag_{safe_tag}"
+    products_file = parent_dir / f"products_tag_{safe_tag}_with_lang.json"
+    
+    # Output files in timestamped directory
     mapping_file = tag_dir / f"tag_{safe_tag}_category_mapping.json"
     metafields_file = tag_dir / f"products_with_metafields.json"
     excel_file = tag_dir / f"{safe_tag}_metafields_final.xlsx"
     
     print("\n" + "="*60)
-    print(" CATEGORY METAFIELDS WORKFLOW")
+    print("🚀 CATEGORY METAFIELDS WORKFLOW")
     print("="*60)
     print(f"Tag: {args.tag}")
     print(f"Model: {args.model}")
     print(f"Mode: {args.mode}")
+    if args.mode == 'parallel':
+        print(f"Workers: {args.workers} (parallel processing)")
+    elif args.mode == 'batch':
+        print(f"Batch size: {args.batch_size}")
+    if args.limit:
+        print(f"⚠️  TEST MODE: Processing only first {args.limit} products")
     print(f"Output directory: {tag_dir}")
     print("="*60)
     
-    # Step 1: Fetch products from Shopify
+    # Step 1: Fetch products from Shopify (saves to parent directory, shared across runs)
     if not args.skip_fetch or not products_file.exists():
         cmd = [
             "python", "scripts/fetch_products.py",
@@ -162,6 +182,9 @@ Examples:
         
         if not run_command(cmd, "Step 1: Fetch Products from Shopify"):
             raise SystemExit(" Workflow failed at Step 1")
+        
+        print(f"\n  Products saved to shared location: {parent_dir}")
+        print(f"  All future runs will reuse these products (use --skip-fetch)")
     else:
         print(f"\n⏭Skipping Step 1: Using existing products file: {products_file}")
     
@@ -169,19 +192,26 @@ Examples:
     if not products_file.exists():
         raise SystemExit(f"Products file not found: {products_file}")
     
-    # Step 2: Match tag to Shopify category
-    if not mapping_file.exists():
+    # Step 2: Match tag to Shopify category (check parent dir first, then create in run dir)
+    parent_mapping = parent_dir / f"tag_{safe_tag}_category_mapping.json"
+    
+    if parent_mapping.exists():
+        print(f"\n⏭️  Step 2: Using existing category mapping from: {parent_mapping}")
+        # Copy to current run directory
+        import shutil
+        shutil.copy(parent_mapping, mapping_file)
+        print(f"  Copied to: {mapping_file}")
+    else:
         cmd = [
             "python", "scripts/match_tag_to_category.py",
             "--tag", args.tag,
             "--products", str(products_file),
-            "--model", args.model
+            "--model", args.model,
+            "--output-dir", str(tag_dir)
         ]
         
         if not run_command(cmd, "Step 2: Match Tag to Shopify Category"):
             raise SystemExit(" Workflow failed at Step 2")
-    else:
-        print(f"\n⏭️  Skipping Step 2: Using existing category mapping: {mapping_file}")
     
     # Verify mapping file exists
     if not mapping_file.exists():
@@ -199,6 +229,12 @@ Examples:
     
     if args.mode == 'batch':
         cmd.extend(["--batch-size", str(args.batch_size)])
+    elif args.mode == 'parallel':
+        cmd.extend(["--workers", str(args.workers)])
+    
+    # Add limit if specified (for testing)
+    if args.limit:
+        cmd.extend(["--limit", str(args.limit)])
     
     if not run_command(cmd, "Step 3: Fill Category Metafields"):
         raise SystemExit(" Workflow failed at Step 3")
