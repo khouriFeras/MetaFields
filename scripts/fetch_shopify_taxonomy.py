@@ -298,7 +298,7 @@ def main():
     # Print summary
     stats = taxonomy_data["statistics"]
     print("\n" + "="*60)
-    print("📊 SUMMARY")
+    print(" SUMMARY")
     print("="*60)
     print(f"Total categories:                {stats['total_categories']}")
     print(f"Leaf categories:                 {stats['leaf_categories']}")

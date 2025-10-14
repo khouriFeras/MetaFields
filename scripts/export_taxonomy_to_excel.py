@@ -22,10 +22,10 @@ if sys.platform == 'win32':
 
 def load_taxonomy(taxonomy_file: str = "data/shopify_taxonomy_full.json"):
     """Load taxonomy from JSON file."""
-    print(f"📂 Loading taxonomy from: {taxonomy_file}")
+    print(f" Loading taxonomy from: {taxonomy_file}")
     with open(taxonomy_file, 'r', encoding='utf-8') as f:
         data = json.load(f)
-    print(f"  ✅ Loaded successfully")
+    print(f" Loaded successfully")
     return data
 
 
@@ -74,7 +74,7 @@ def create_categories_sheet(wb: Workbook, categories: list):
     # Freeze first row
     ws.freeze_panes = "A2"
     
-    print(f"  ✅ Created Categories sheet with {row_idx-2} categories")
+    print(f" Created Categories sheet with {row_idx-2} categories")
 
 
 def create_categories_with_metafields_sheet(wb: Workbook, categories: list):
@@ -119,7 +119,7 @@ def create_categories_with_metafields_sheet(wb: Workbook, categories: list):
     # Freeze first row
     ws.freeze_panes = "A2"
     
-    print(f"  ✅ Created Categories with Metafields sheet with {row_idx-2} categories")
+    print(f" Created Categories with Metafields sheet with {row_idx-2} categories")
 
 
 def create_metafields_sheet(wb: Workbook, categories: list):
@@ -181,7 +181,7 @@ def create_metafields_sheet(wb: Workbook, categories: list):
     # Freeze first row
     ws.freeze_panes = "A2"
     
-    print(f"  ✅ Created Metafields Details sheet with {row_idx-2} metafields")
+    print(f" Created Metafields Details sheet with {row_idx-2} metafields")
 
 
 def create_categories_with_types_sheet(wb: Workbook, categories_with_metafields: list):
@@ -231,7 +231,7 @@ def create_categories_with_types_sheet(wb: Workbook, categories_with_metafields:
     # Freeze first row
     ws.freeze_panes = "A2"
     
-    print(f"  ✅ Created Categories + Metafields sheet with {row_idx-2} entries")
+    print(f" Created Categories + Metafields sheet with {row_idx-2} entries")
 
 
 def create_summary_sheet(wb: Workbook, taxonomy_data: dict):
@@ -283,18 +283,18 @@ def create_summary_sheet(wb: Workbook, taxonomy_data: dict):
     ws.column_dimensions['A'].width = 35
     ws.column_dimensions['B'].width = 50
     
-    print(f"  ✅ Created Summary sheet")
+    print(f" Created Summary sheet")
 
 
 def export_taxonomy_to_excel(taxonomy_file: str = "data/shopify_taxonomy_full.json",
                              output_file: str = "shopify_taxonomy_reference.xlsx"):
     """Export taxonomy to Excel file."""
-    print("📊 Exporting Shopify Taxonomy to Excel\n")
+    print(" Exporting Shopify Taxonomy to Excel\n")
     
     # Load taxonomy
     taxonomy_data = load_taxonomy(taxonomy_file)
     
-    print("\n📝 Creating Excel sheets...")
+    print("\n Creating Excel sheets...")
     
     # Create workbook
     wb = Workbook()
@@ -311,13 +311,13 @@ def export_taxonomy_to_excel(taxonomy_file: str = "data/shopify_taxonomy_full.js
     create_metafields_sheet(wb, taxonomy_data.get('all_categories', []))
     
     # Save
-    print(f"\n💾 Saving to: {output_file}")
+    print(f"\n Saving to: {output_file}")
     wb.save(output_file)
-    print(f"  ✅ Saved successfully!")
+    print(f"   Saved successfully!")
     
     # Summary
     print("\n" + "="*60)
-    print("📊 EXCEL FILE CREATED")
+    print("EXCEL FILE CREATED")
     print("="*60)
     print(f"File: {output_file}")
     print("\nSheets:")
@@ -327,7 +327,7 @@ def export_taxonomy_to_excel(taxonomy_file: str = "data/shopify_taxonomy_full.js
     print("  4. Categories + Metafields - Detailed with types")
     print("  5. Metafields Details - All metafield info")
     print("="*60)
-    print("\n✅ Open the file to browse Shopify's taxonomy!")
+    print("\n Open the file to browse Shopify's taxonomy!")
 
 
 def main():
@@ -352,7 +352,7 @@ def main():
     
     # Check if taxonomy file exists
     if not Path(args.taxonomy).exists():
-        print(f"❌ Taxonomy file not found: {args.taxonomy}")
+        print(f" Taxonomy file not found: {args.taxonomy}")
         print("\nPlease run first:")
         print("  python scripts/fetch_shopify_taxonomy.py")
         return

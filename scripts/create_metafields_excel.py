@@ -266,7 +266,7 @@ def create_metafields_sheet(wb: Workbook, mapping: Dict) -> None:
 
 def create_excel_report(products: List[Dict], mapping: Dict, output_file: str) -> None:
     """Create complete Excel report."""
-    print(f"\n📊 Creating Excel report...")
+    print(f"\n Creating Excel report...")
     
     wb = Workbook()
     
@@ -275,13 +275,13 @@ def create_excel_report(products: List[Dict], mapping: Dict, output_file: str) -
         wb.remove(wb["Sheet"])
     
     # Create sheets
-    print("  📄 Creating Summary sheet...")
+    print("   Creating Summary sheet...")
     create_summary_sheet(wb, products, mapping)
     
-    print("  📄 Creating Products sheet...")
+    print("   Creating Products sheet...")
     create_products_sheet(wb, products, mapping)
     
-    print("  📄 Creating Metafield Definitions sheet...")
+    print("   Creating Metafield Definitions sheet...")
     create_metafields_sheet(wb, mapping)
     
     # Save workbook
@@ -289,7 +289,7 @@ def create_excel_report(products: List[Dict], mapping: Dict, output_file: str) -
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_file)
     
-    print(f"  ✅ Excel report saved: {output_file}")
+    print(f" Excel report saved: {output_file}")
 
 
 def main():
@@ -315,20 +315,20 @@ Examples:
     args = parser.parse_args()
     
     # Load data
-    print(f"📂 Loading products from: {args.products}")
+    print(f" Loading products from: {args.products}")
     products = load_json(args.products)
-    print(f"  ✅ Loaded {len(products)} products")
+    print(f"Loaded {len(products)} products")
     
     print(f"\n📂 Loading category mapping from: {args.mapping}")
     mapping = load_json(args.mapping)
-    print(f"  ✅ Category: {mapping['category']['fullName']}")
-    print(f"  ✅ Metafields: {len(mapping['metafields'])}")
+    print(f" Category: {mapping['category']['fullName']}")
+    print(f"Metafields: {len(mapping['metafields'])}")
     
     # Create Excel report
     create_excel_report(products, mapping, args.output)
     
-    print("\n✅ Excel report creation complete!")
-    print(f"\n📊 Review the file: {args.output}")
+    print("\n Excel report creation complete!")
+    print(f"\n Review the file: {args.output}")
     print("   - Summary: Overview and statistics")
     print("   - Products: All products with filled metafields")
     print("   - Metafield Definitions: Field specifications")

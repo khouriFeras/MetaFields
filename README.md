@@ -14,7 +14,10 @@ Automatically fills **Shopify's standard category metafields** for your products
 1. ✅ Matches products to **Shopify's official categories** (21,000+ available)
 2. ✅ Gets **standard metafields** for each category (proper types included)
 3. ✅ **AI fills metafields** by analyzing product data
-4. ✅ Exports to **Excel for review** before uploading
+4. ✅ Exports to **Excel for review** and manual editing
+5. ✅ **Syncs Excel changes back to JSON**
+6. ✅ **Uploads metafields to Shopify** with proper key mapping
+7. ✅ **Creates metafield definitions** for storefront visibility and filters
 
 ---
 
@@ -53,15 +56,43 @@ python scripts/category_metafields_workflow.py --tag YOUR_TAG
 python scripts/category_metafields_workflow.py --tag Televisions
 ```
 
-### 5. Review Results
+### 5. Review & Edit Results
 
 Open: `exports/tag_YOUR_TAG/YOUR_TAG_metafields_final.xlsx`
 
 **3 sheets:**
 
 1. Summary - Statistics and category match
-2. Products - All products with filled metafields
+2. Products - All products with filled metafields (editable)
 3. Metafield Definitions - Field specifications
+
+**💡 Edit the Excel file to:**
+- Remove unwanted metafields
+- Fix incorrect values
+- Add missing values
+
+### 6. Sync Changes & Upload to Shopify
+
+```bash
+# Sync Excel changes back to JSON
+python scripts/sync_excel_to_json.py \
+  --excel exports/tag_YOUR_TAG/YOUR_TAG_metafields_final.xlsx \
+  --json exports/tag_YOUR_TAG/products_with_metafields.json \
+  --output exports/tag_YOUR_TAG/products_synced.json
+
+# Upload metafields to Shopify (test with 10 products first)
+python scripts/upload_metafields.py \
+  --products exports/tag_YOUR_TAG/products_synced.json \
+  --mapping exports/tag_YOUR_TAG/tag_YOUR_TAG_category_mapping.json \
+  --limit 10
+
+# Create metafield definitions (enables filters)
+python scripts/create_metafield_definitions.py \
+  --mapping exports/tag_YOUR_TAG/tag_YOUR_TAG_category_mapping.json
+
+# Verify upload (check a product)
+python scripts/verify_metafields.py --product-id PRODUCT_ID
+```
 
 
 
@@ -137,9 +168,13 @@ Match Products → Shopify Category
   ↓
 Get Category Metafields
   ↓
-AI Fills Values (GPT-4o)
+AI Fills Values (GPT-4o-mini)
   ↓
-Excel Report
+Excel Report → Manual Review/Edit
+  ↓
+Sync Excel → JSON (key mapping)
+  ↓
+Upload to Shopify → Create Definitions → Enable Filters
 ```
 
 **Data Source:** [Shopify&#39;s Product Taxonomy](https://github.com/Shopify/product-taxonomy) (Open Source)
@@ -150,12 +185,16 @@ Excel Report
 
 ```
 scripts/
-├── fetch_shopify_taxonomy.py          # Downloads taxonomy from GitHub
-├── fetch_products.py                  # Gets products from Shopify
+├── category_metafields_workflow.py    # Complete workflow ⭐
+├── fetch_category_products.py         # Gets products from Shopify
 ├── match_tag_to_category.py           # AI category matching
-├── fill_category_metafields.py        # AI metafield filling
-├── create_metafields_excel.py         # Excel report generator
-└── category_metafields_workflow.py    # Complete workflow ⭐
+├── fill_category_metafields.py        # AI metafield filling (with key extraction fixes)
+├── create_excel_from_json.py          # Excel report generator
+├── sync_excel_to_json.py              # Sync Excel edits back to JSON
+├── upload_metafields.py               # Upload to Shopify (with key mapping)
+├── create_metafield_definitions.py    # Create definitions for filters
+├── verify_metafields.py               # Verify uploads
+└── remove_metafields.py               # Remove specific metafields
 
 data/
 └── shopify_taxonomy_full.json         # Cached taxonomy (21K+ categories)
@@ -165,7 +204,8 @@ exports/
     ├── products_*.json
     ├── tag_*_category_mapping.json
     ├── products_with_metafields.json
-    └── *_metafields_final.xlsx        # Review this! ⭐
+    ├── products_synced.json           # After Excel sync
+    └── *_metafields_final.xlsx        # Edit this! ⭐
 ```
 
 ---
@@ -259,10 +299,12 @@ python scripts/category_metafields_workflow.py --tag YOUR_TAG --batch-size 5
 
 ## ⚠️ Important Notes
 
-- **Analysis Only** - Does NOT upload to Shopify automatically
-- **Review Required** - Always check Excel before using data
-- **OpenAI API** - Requires GPT-4o access
+- **Review Required** - Always check and edit Excel before uploading to Shopify
+- **OpenAI API** - Uses GPT-4o-mini by default (cost-effective)
 - **GitHub-Based** - No Shopify API version dependencies
+- **Storefront Filters** - Metafield definitions enable collection page filters
+- **Key Mapping** - Automatically handles Excel format to Shopify format conversion
+- **Custom Metafields** - Supports adding custom metafields (e.g., Screen size for TVs)
 
 ---
 
@@ -271,10 +313,11 @@ python scripts/category_metafields_workflow.py --tag YOUR_TAG --batch-size 5
 **Python Packages:**
 
 ```
-requests>=2.31.0
+requests>=2.32.0
 openai>=1.0.0
 python-dotenv>=1.0.0
 openpyxl>=3.1.0
+pandas>=2.0.0
 ```
 
 **APIs:**
@@ -303,7 +346,11 @@ MIT License - See [LICENSE](LICENSE) file
 2. **Setup:** Install dependencies and configure `.env`
 3. **Fetch taxonomy:** `python scripts/fetch_shopify_taxonomy.py`
 4. **Analyze:** `python scripts/category_metafields_workflow.py --tag YOUR_TAG`
-5. **Review:** Open Excel file in `exports/tag_YOUR_TAG/`
+5. **Review & Edit:** Open and edit Excel file in `exports/tag_YOUR_TAG/`
+6. **Sync:** `python scripts/sync_excel_to_json.py ...`
+7. **Upload:** `python scripts/upload_metafields.py ...` (test with `--limit 10` first)
+8. **Enable filters:** `python scripts/create_metafield_definitions.py ...`
+9. **Verify:** `python scripts/verify_metafields.py --product-id ID`
 
 ---
 
