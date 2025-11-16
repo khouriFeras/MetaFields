@@ -112,52 +112,56 @@ query GetProducts($first: Int!, $after: String) {
 """
 
 PRODUCT_BY_HANDLE_QUERY = """
-query GetProductByHandle($handle: String!) {
-  product(handle: $handle) {
-    id
-    title
-    handle
-    descriptionHtml
-    tags
-    productType
-    vendor
-    createdAt
-    updatedAt
-    status
-    publishedAt
-    priceRange {
-      minVariantPrice {
-        amount
-        currencyCode
-      }
-      maxVariantPrice {
-        amount
-        currencyCode
-      }
-    }
-    variants(first: 10) {
-      edges {
-        node {
-          id
-          title
-          price
-          compareAtPrice
-          availableForSale
-          selectedOptions {
-            name
-            value
+query GetProductByHandle($query: String!) {
+  products(first: 1, query: $query) {
+    edges {
+      node {
+        id
+        title
+        handle
+        descriptionHtml
+        tags
+        productType
+        vendor
+        createdAt
+        updatedAt
+        status
+        publishedAt
+        priceRange {
+          minVariantPrice {
+            amount
+            currencyCode
+          }
+          maxVariantPrice {
+            amount
+            currencyCode
           }
         }
-      }
-    }
-    metafields(first: 50, namespace: "spec") {
-      edges {
-        node {
-          id
-          namespace
-          key
-          value
-          type
+        variants(first: 10) {
+          edges {
+            node {
+              id
+              title
+              price
+              compareAtPrice
+              availableForSale
+              selectedOptions {
+                name
+                value
+              }
+            }
+          }
+        }
+        metafields(first: 50, namespace: "spec") {
+          edges {
+            node {
+              id
+              namespace
+              key
+              value
+              type
+            }
+          }
         }
       }
     }
@@ -420,10 +424,27 @@ def fetch_product_by_handle(handle: str) -> Optional[Dict]:
     """Fetch a single product by handle."""
     print(f"Fetching product by handle: {handle}")
     
-    variables = {"handle": handle}
+    variables = {"query": f"handle:{handle}"}
     data = make_graphql_request(PRODUCT_BY_HANDLE_QUERY, variables)
     
-    return data.get("product")
+    products_data = data.get("products", {})
+    edges = products_data.get("edges", [])
+    if edges:
+        return edges[0].get("node")
+    return None
+
+def fetch_product_by_sku(sku: str) -> Optional[Dict]:
+    """Fetch a single product by SKU."""
+    print(f"Fetching product by SKU: {sku}")
+    
+    variables = {"query": f"sku:{sku}"}
+    data = make_graphql_request(PRODUCT_BY_HANDLE_QUERY, variables)
+    
+    products_data = data.get("products", {})
+    edges = products_data.get("edges", [])
+    if edges:
+        return edges[0].get("node")
+    return None
 
 def fetch_product_by_id(product_id: str) -> Optional[Dict]:
     """Fetch a single product by ID."""
@@ -460,6 +481,11 @@ def fetch_products_by_tag(tag: str) -> List[Dict]:
         time.sleep(0.5)
     
     print(f"  Fetched {len(products)} products with tag '{tag}'")
+    
+    # Filter to only ACTIVE products
+    products = filter_active_products(products)
+    print(f"  {len(products)} products are ACTIVE")
+    
     return products
 
 
@@ -493,23 +519,39 @@ def fetch_collections() -> List[Dict]:
 
 def fetch_collection_products(collection_identifier: str) -> List[Dict]:
     """Fetch products from a collection by handle, ID, or title."""
-    print(f"Fetching products from collection: {collection_identifier}")
+    try:
+        print(f"Fetching products from collection: {collection_identifier}")
+    except UnicodeEncodeError:
+        print(f"Fetching products from collection: {collection_identifier.encode('ascii', 'ignore').decode()}")
     
     # First, get all collections to find the right one
     collections = fetch_collections()
     
     collection = None
+    # Normalize the search term (case-insensitive, strip whitespace)
+    search_term = collection_identifier.strip()
+    search_term_lower = search_term.lower()
+    
     for coll in collections:
-        if (coll["handle"] == collection_identifier or 
-            coll["id"] == collection_identifier or 
-            coll["title"] == collection_identifier):
+        coll_handle = coll.get("handle", "").strip().lower()
+        coll_title = coll.get("title", "").strip().lower()
+        coll_id = coll.get("id", "").strip()
+        
+        if (coll_handle == search_term_lower or 
+            coll_title == search_term_lower or 
+            coll_id == collection_identifier or
+            coll.get("handle") == collection_identifier or
+            coll.get("title") == collection_identifier):
             collection = coll
             break
     
     if not collection:
         raise SystemExit(f"Collection not found: {collection_identifier}")
     
-    print(f"  Found collection: {collection['title']} (ID: {collection['id']})")
+    try:
+        print(f"  Found collection: {collection['title']} (ID: {collection['id']})")
+    except UnicodeEncodeError:
+        print(f"  Found collection: {collection['id']}")
     
     products = []
     has_next_page = True
@@ -537,6 +579,11 @@ def fetch_collection_products(collection_identifier: str) -> List[Dict]:
         time.sleep(0.5)
     
     print(f"  Fetched {len(products)} products from collection")
+    
+    # Filter to only ACTIVE products
+    products = filter_active_products(products)
+    print(f"  {len(products)} products are ACTIVE")
+    
     return products
 
 
@@ -626,6 +673,14 @@ def process_variants(product: Dict) -> Dict:
         "pricing": pricing_info
     }
 
+
+def filter_active_products(products: List[Dict]) -> List[Dict]:
+    """Filter products to only include ACTIVE status."""
+    active_products = [p for p in products if p.get('status', '').upper() == 'ACTIVE']
+    filtered_count = len(products) - len(active_products)
+    if filtered_count > 0:
+        print(f"  Filtered out {filtered_count} inactive products (status != ACTIVE)")
+    return active_products
 
 def add_language_markers(products: List[Dict]) -> List[Dict]:
     """Add language markers and process metafields and variants for products."""
@@ -768,30 +823,37 @@ Examples:
     
     subparsers = parser.add_subparsers(dest='command', help='Fetch method')
     
+    # Common arguments function
+    def add_common_args(subparser):
+        subparser.add_argument('--output-dir', default=OUTPUT_DIR, help='Output directory')
+        subparser.add_argument('--no-csv', action='store_true', help='Skip CSV export')
+        subparser.add_argument('--no-xlsx', action='store_true', help='Skip XLSX export')
+    
     # All products command
     all_parser = subparsers.add_parser('all', help='Fetch all products')
+    add_common_args(all_parser)
     
     # Single product command
     single_parser = subparsers.add_parser('single', help='Fetch single product')
     single_group = single_parser.add_mutually_exclusive_group(required=True)
     single_group.add_argument('--handle', help='Product handle')
     single_group.add_argument('--id', help='Product ID')
+    single_group.add_argument('--sku', help='Product SKU')
+    add_common_args(single_parser)
     
     # Tag command
     tag_parser = subparsers.add_parser('tag', help='Fetch products by tag')
     tag_parser.add_argument('--name', required=True, help='Tag name')
+    add_common_args(tag_parser)
     
     # Collection command
     collection_parser = subparsers.add_parser('collection', help='Fetch products from collection')
     collection_group = collection_parser.add_mutually_exclusive_group(required=True)
     collection_group.add_argument('--handle', help='Collection handle')
     collection_group.add_argument('--title', help='Collection title')
+    collection_group.add_argument('--name', help='Collection name/title (alias for --title)')
     collection_group.add_argument('--id', help='Collection ID')
-    
-    # Common arguments
-    parser.add_argument('--output-dir', default=OUTPUT_DIR, help='Output directory')
-    parser.add_argument('--no-csv', action='store_true', help='Skip CSV export')
-    parser.add_argument('--no-xlsx', action='store_true', help='Skip XLSX export')
+    add_common_args(collection_parser)
     
     args = parser.parse_args()
     
@@ -827,6 +889,14 @@ Examples:
             else:
                 print(f"Product not found: {args.id}")
                 sys.exit(1)
+        elif args.sku:
+            product = fetch_product_by_sku(args.sku)
+            if product:
+                products = [product]
+                filename_prefix = f"single_product_{args.sku}"
+            else:
+                print(f"Product not found: {args.sku}")
+                sys.exit(1)
                 
     elif args.command == 'tag':
         products = fetch_products_by_tag(args.name)
@@ -843,6 +913,11 @@ Examples:
         elif args.title:
             products = fetch_collection_products(args.title)
             safe_name = args.title.replace(' ', '_').replace('/', '_')
+            filename_prefix = f"collection_{safe_name}"
+            subfolder_name = safe_name
+        elif args.name:
+            products = fetch_collection_products(args.name)
+            safe_name = args.name.replace(' ', '_').replace('/', '_')
             filename_prefix = f"collection_{safe_name}"
             subfolder_name = safe_name
         elif args.id:

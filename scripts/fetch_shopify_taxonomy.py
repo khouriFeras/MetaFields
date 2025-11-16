@@ -126,9 +126,10 @@ def process_taxonomy_data(taxonomy_json: Dict, attribute_type_map: Dict[str, Dic
     print(f" Found {len(leaf_categories)} leaf categories (most specific)")
     
     # Process metafields for categories that have attributes
+    # Include ALL categories (not just leaf) if they have attributes
     categories_with_metafields = []
     
-    for category in leaf_categories:
+    for category in all_categories:
         attributes = category.get("attributes", [])
         
         if attributes:

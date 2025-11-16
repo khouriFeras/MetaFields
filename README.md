@@ -1,359 +1,555 @@
-# 🚀 Shopify Category Metafields System
+# 🚀 Shopify Metafields Management System
 
-**AI-Powered metafield filling using Shopify's standard product taxonomy**
+**AI-Powered metafield filling and management using Shopify's standard product taxonomy**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
 ---
 
-## ✨ What This Does
+## 📋 Table of Contents
 
-Automatically fills **Shopify's standard category metafields** for your products using AI:
+- [Overview](#overview)
+- [Features](#features)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Workflow](#workflow)
+- [Scripts Reference](#scripts-reference)
+- [Data Formats](#data-formats)
+- [Examples](#examples)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+## ✨ Overview
+
+This system automatically fills **Shopify's standard category metafields** for your products using AI. It:
 
 1. ✅ Matches products to **Shopify's official categories** (21,000+ available)
 2. ✅ Gets **standard metafields** for each category (proper types included)
-3. ✅ **AI fills metafields** by analyzing product data
+3. ✅ **AI fills metafields** by analyzing product data (title, description, etc.)
 4. ✅ Exports to **Excel for review** and manual editing
-5. ✅ **Syncs Excel changes back to JSON**
-6. ✅ **Uploads metafields to Shopify** with proper key mapping
-7. ✅ **Creates metafield definitions** for storefront visibility and filters
+5. ✅ **Converts between Excel and JSON** formats
+6. ✅ **Adds new metafields** without affecting existing ones
+7. ✅ **Uploads metafields to Shopify** with proper key mapping
+8. ✅ **Verifies uploads** and manages metafield definitions
 
----
-
-## 🎯 Quick Start
-
-### 1. Install
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Configure
-
-Create `.env` file:
-
-```env
-SHOPIFY_STORE_DOMAIN=your-store.myshopify.com
-SHOPIFY_ADMIN_ACCESS_TOKEN=shpat_your_token
-OPENAI_API_KEY=sk-your_openai_key
-```
-
-### 3. One-Time Setup
-
-```bash
-# Fetch Shopify's taxonomy (only once!)
-python scripts/fetch_shopify_taxonomy.py
-```
-
-### 4. Analyze Products
-
-```bash
-# Complete workflow - one command!
-python scripts/category_metafields_workflow.py --tag YOUR_TAG
-
-# Example:
-python scripts/category_metafields_workflow.py --tag Televisions
-```
-
-### 5. Review & Edit Results
-
-Open: `exports/tag_YOUR_TAG/YOUR_TAG_metafields_final.xlsx`
-
-**3 sheets:**
-
-1. Summary - Statistics and category match
-2. Products - All products with filled metafields (editable)
-3. Metafield Definitions - Field specifications
-
-**💡 Edit the Excel file to:**
-- Remove unwanted metafields
-- Fix incorrect values
-- Add missing values
-
-### 6. Sync Changes & Upload to Shopify
-
-```bash
-# Sync Excel changes back to JSON
-python scripts/sync_excel_to_json.py \
-  --excel exports/tag_YOUR_TAG/YOUR_TAG_metafields_final.xlsx \
-  --json exports/tag_YOUR_TAG/products_with_metafields.json \
-  --output exports/tag_YOUR_TAG/products_synced.json
-
-# Upload metafields to Shopify (test with 10 products first)
-python scripts/upload_metafields.py \
-  --products exports/tag_YOUR_TAG/products_synced.json \
-  --mapping exports/tag_YOUR_TAG/tag_YOUR_TAG_category_mapping.json \
-  --limit 10
-
-# Create metafield definitions (enables filters)
-python scripts/create_metafield_definitions.py \
-  --mapping exports/tag_YOUR_TAG/tag_YOUR_TAG_category_mapping.json
-
-# Verify upload (check a product)
-python scripts/verify_metafields.py --product-id PRODUCT_ID
-```
-
-
-
----
-
-github link of shopify texo
-[Shopify/storefront-api-learning-kit](https://github.com/Shopify/storefront-api-learning-kit)
-
-📊 Example Results
-
-### Televisions (201 products)
-
-**Category Matched:** `Electronics > Video > Televisions`
-**Confidence:** High
-**Metafields:** 14 fields with proper types
-**Results:** 1,192 metafields filled (5.9 avg/product)
-
-**Metafields:**
-
-- Display resolution (list) - 26 options
-- Display technology (list) - 31 options
-- Smart TV platform (list) - 9 options
-- Audio technology (list) - 15 options
-- HDR format (list) - 7 options
-- Connection type (list) - 39 options
-- Color (list) - 19 options
-- +7 more fields
-
-### Water Pumps (182 products)
-
-**Category Matched:** `Hardware > Hardware Pumps > Centrifugal Pumps`
-**Confidence:** High
-**Metafields:** 5 fields
-**Results:** 900+ metafields filled
+**⚠️ Important:** This system is for **ANALYSIS ONLY** by default. It will NOT upload data to Shopify unless you explicitly request it.
 
 ---
 
 ## 🔑 Key Features
 
-✅ **21,396 Shopify categories** - Complete product taxonomy
-✅ **8,486 categories with metafields** - Standard field definitions
-✅ **Proper types** - `list.single_line_text_field` vs `single_line_text_field`
-✅ **Predefined values** - Dropdown options for list fields
-✅ **Smart matching** - AI-powered category selection
-✅ **100% coverage** - Analyzes all products
-✅ **Excel reports** - Easy review before upload
-✅ **GitHub-based** - No API version issues
+- **21,396 Shopify categories** - Complete product taxonomy
+- **8,486 categories with metafields** - Standard field definitions
+- **Proper types** - `list.single_line_text_field` vs `single_line_text_field`
+- **Predefined values** - Dropdown options for list fields
+- **Smart matching** - AI-powered category selection
+- **100% coverage** - Analyzes all products
+- **Excel reports** - Easy review before upload
+- **Bilingual support** - Arabic and English metafields
+- **GitHub-based** - No API version issues
 
 ---
 
-## 📖 Documentation
+## 📦 Installation
 
-**👉 [READ THE COMPLETE GUIDE](COMPLETE_GUIDE.md)** 👈
+### Prerequisites
 
-The complete guide includes:
+- Python 3.8 or higher
+- pip package manager
 
-- Detailed step-by-step instructions
-- How the system works
-- Technical details
-- Troubleshooting
-- Examples for different product types
-
----
-
-## 🛠️ System Architecture
-
-```
-GitHub Taxonomy
-  ↓
-Fetch & Process (one time)
-  ↓
-Match Products → Shopify Category
-  ↓
-Get Category Metafields
-  ↓
-AI Fills Values (GPT-4o-mini)
-  ↓
-Excel Report → Manual Review/Edit
-  ↓
-Sync Excel → JSON (key mapping)
-  ↓
-Upload to Shopify → Create Definitions → Enable Filters
-```
-
-**Data Source:** [Shopify&#39;s Product Taxonomy](https://github.com/Shopify/product-taxonomy) (Open Source)
-
----
-
-## 📁 Project Structure
-
-```
-scripts/
-├── category_metafields_workflow.py    # Complete workflow ⭐
-├── fetch_category_products.py         # Gets products from Shopify
-├── match_tag_to_category.py           # AI category matching
-├── fill_category_metafields.py        # AI metafield filling (with key extraction fixes)
-├── create_excel_from_json.py          # Excel report generator
-├── sync_excel_to_json.py              # Sync Excel edits back to JSON
-├── upload_metafields.py               # Upload to Shopify (with key mapping)
-├── create_metafield_definitions.py    # Create definitions for filters
-├── verify_metafields.py               # Verify uploads
-└── remove_metafields.py               # Remove specific metafields
-
-data/
-└── shopify_taxonomy_full.json         # Cached taxonomy (21K+ categories)
-
-exports/
-└── tag_YOUR_TAG/
-    ├── products_*.json
-    ├── tag_*_category_mapping.json
-    ├── products_with_metafields.json
-    ├── products_synced.json           # After Excel sync
-    └── *_metafields_final.xlsx        # Edit this! ⭐
-```
-
----
-
-## 💡 Use Cases
-
-### Electronics
-
-- TVs, Monitors, Cameras, Phones
-- Standard tech specs extracted
-
-### Hardware & Tools
-
-- Pumps, Drills, Saws, Equipment
-- Technical specifications filled
-
-### Pet Products
-
-- Food, Toys, Accessories
-- Life stage, flavor, size extracted
-
-### Fashion & Apparel
-
-- Clothing, Shoes, Accessories
-- Size, color, material filled
-
-### Home & Garden
-
-- Furniture, Decor, Appliances
-- Dimensions, material, features
-
-**Works for any product category in Shopify's taxonomy!**
-
----
-
-## 🎯 Workflow Commands
+### Install Dependencies
 
 ```bash
-# Complete workflow (recommended)
-python scripts/category_metafields_workflow.py --tag YOUR_TAG
+pip install -r requirements.txt
+```
 
-# Skip fetching (use existing products)
-python scripts/category_metafields_workflow.py --tag YOUR_TAG --skip-fetch
+### Required Packages
 
-# Single product mode (more accurate)
-python scripts/category_metafields_workflow.py --tag YOUR_TAG --mode single
+- `requests` - HTTP requests to Shopify API
+- `python-dotenv` - Environment variable management
+- `openpyxl` - Excel file handling
+- `openai` - AI-powered metafield filling
+- `pandas` - Data manipulation
+- `pyyaml` - YAML file parsing
 
-# Custom batch size
-python scripts/category_metafields_workflow.py --tag YOUR_TAG --batch-size 5
+---
+
+## ⚙️ Configuration
+
+### 1. Create `.env` File
+
+Create a `.env` file in the project root:
+
+```env
+# Shopify Configuration
+SHOPIFY_STORE_DOMAIN=your-store.myshopify.com
+SHOPIFY_ADMIN_ACCESS_TOKEN=shpat_your_token_here
+SHOPIFY_API_VERSION=2024-07
+
+# OpenAI Configuration (for AI metafield filling)
+OPENAI_API_KEY=sk-your_openai_key_here
+
+# Optional: Language Settings
+TARGET_LANGUAGE=en
+ORIGINAL_LANGUAGE=ar
+
+# Optional: Output Directory
+OUTPUT_DIR=exports
+```
+
+### 2. One-Time Setup: Fetch Shopify Taxonomy
+
+Download Shopify's product taxonomy (only needs to be done once):
+
+```bash
+python scripts/fetch_shopify_taxonomy.py
+```
+
+This creates:
+- `data/shopify_taxonomy_full.json` - Complete taxonomy (21K+ categories)
+- `data/shopify_attributes.yml` - Metafield definitions
+- `data/shopify_values.yml` - Predefined values for list fields
+
+---
+
+## 🔄 Workflow
+
+### Complete Workflow Overview
+
+```
+1. Fetch Products from Shopify
+   ↓
+2. Match Products to Shopify Categories (AI-powered)
+   ↓
+3. Get Category Metafields
+   ↓
+4. AI Fills Metafield Values
+   ↓
+5. Export to Excel for Review
+   ↓
+6. Edit Excel File (Optional)
+   ↓
+7. Convert Excel Back to JSON
+   ↓
+8. Upload to Shopify (When Ready)
+```
+
+### Step-by-Step Guide
+
+#### Step 1: Fetch Products
+
+Fetch products by tag, collection, or all products:
+
+```bash
+# Fetch products by tag
+python scripts/fetch_products.py --tag "Water Heaters" --output exports/water_heaters.json
+
+# Fetch products by collection
+python scripts/fetch_products.py --collection "كيزر" --output exports/geyser.json
+
+# Fetch all products
+python scripts/fetch_products.py --all --output exports/all_products.json
+```
+
+#### Step 2: Fill Metafields
+
+Use AI to fill metafields based on product data:
+
+```bash
+python scripts/fill_category_metafields.py \
+  --products exports/water_heaters.json \
+  --category "Home & Garden > Household Appliances > Water Heaters" \
+  --output exports/water_heaters_filled.json
+```
+
+#### Step 3: Create Excel Report
+
+Generate Excel file for review:
+
+```bash
+python scripts/create_metafields_excel.py \
+  --products exports/water_heaters_filled.json \
+  --output exports/water_heaters_metafields.xlsx
+```
+
+#### Step 4: Review and Edit Excel
+
+Open the Excel file (`exports/water_heaters_metafields.xlsx`) and review/edit:
+- **Summary sheet** - Statistics and category information
+- **Products sheet** - All products with metafields (editable)
+- **Metafield Definitions sheet** - Field specifications
+
+#### Step 5: Convert Excel Back to JSON
+
+After editing, convert back to JSON:
+
+```bash
+python scripts/excel_to_json.py exports/water_heaters_metafields.xlsx
+```
+
+This creates `exports/water_heaters_metafields.json` with all your changes.
+
+#### Step 6: Upload to Shopify (Optional)
+
+**⚠️ Only when you're ready to upload:**
+
+```bash
+python scripts/upload_metafields.py \
+  --products exports/water_heaters_metafields.json \
+  --limit 10  # Test with 10 products first
 ```
 
 ---
 
-## 📊 Statistics
+## 📚 Scripts Reference
 
-- **Categories:** 21,396 total
-- **Leaf categories:** 19,296 (most specific)
-- **Categories with metafields:** 8,486
-- **Attributes:** 2,023 with proper types
-- **Success rate:** 100% (all products processed)
-- **Average coverage:** 70-90% metafields filled
+### Core Scripts
 
----
+#### `fetch_products.py`
+Fetches products from Shopify.
 
-## 💰 Cost Estimate (Optimized)
-
-**Per 200 Products (Using gpt-4o-mini - Default):**
-
-- Taxonomy fetch: $0 (downloads from GitHub)
-- Category match: $0.003
-- Metafield filling: $0.08
-- **Total: ~$0.08** per tag
-
-**Per 200 Products (Using gpt-5-nano - Recommended for max savings):**
-
-- Taxonomy fetch: $0 (downloads from GitHub)
-- Category match: $0.001
-- Metafield filling: $0.03
-- **Total: ~$0.03** per tag 🔥
-
-**Cost Optimizations Applied:**
-
-- ✅ Default model: gpt-4o-mini (85% cheaper than gpt-4o)
-- ✅ Batch size: 20 (50% fewer API calls)
-- ✅ Description length: 300 chars (token optimization)
-- ✅ Variants: 2 per product (token optimization)
-
-**Use gpt-5-nano for maximum savings: `--model gpt-5-nano`**
-
----
-
-## ⚠️ Important Notes
-
-- **Review Required** - Always check and edit Excel before uploading to Shopify
-- **OpenAI API** - Uses GPT-4o-mini by default (cost-effective)
-- **GitHub-Based** - No Shopify API version dependencies
-- **Storefront Filters** - Metafield definitions enable collection page filters
-- **Key Mapping** - Automatically handles Excel format to Shopify format conversion
-- **Custom Metafields** - Supports adding custom metafields (e.g., Screen size for TVs)
-
----
-
-## 🔧 Requirements
-
-**Python Packages:**
-
-```
-requests>=2.32.0
-openai>=1.0.0
-python-dotenv>=1.0.0
-openpyxl>=3.1.0
-pandas>=2.0.0
+**Usage:**
+```bash
+python scripts/fetch_products.py --tag TAG_NAME --output OUTPUT_FILE.json
+python scripts/fetch_products.py --collection COLLECTION_NAME --output OUTPUT_FILE.json
+python scripts/fetch_products.py --all --output OUTPUT_FILE.json
 ```
 
-**APIs:**
+**Options:**
+- `--tag` - Fetch products by tag
+- `--collection` - Fetch products by collection (handle, ID, or title)
+- `--all` - Fetch all products
+- `--output` - Output JSON file path
+- `--format` - Output format: json, csv, or xlsx
 
-- Shopify Admin API (read products)
-- OpenAI API (GPT-4o)
+#### `fetch_shopify_taxonomy.py`
+Downloads Shopify's product taxonomy (one-time setup).
+
+**Usage:**
+```bash
+python scripts/fetch_shopify_taxonomy.py
+```
+
+#### `fill_category_metafields.py`
+Fills metafields using AI based on product data.
+
+**Usage:**
+```bash
+python scripts/fill_category_metafields.py \
+  --products PRODUCTS_FILE.json \
+  --category "Category Path" \
+  --output OUTPUT_FILE.json
+```
+
+**Options:**
+- `--products` - Input products JSON file
+- `--category` - Shopify category path (e.g., "Home & Garden > Household Appliances > Water Heaters")
+- `--output` - Output JSON file path
+- `--batch-size` - Number of products to process per batch (default: 10)
+
+#### `create_metafields_excel.py`
+Creates Excel report with products and metafields.
+
+**Usage:**
+```bash
+python scripts/create_metafields_excel.py \
+  --products PRODUCTS_FILE.json \
+  --output OUTPUT_FILE.xlsx
+```
+
+**Options:**
+- `--products` - Input products JSON file
+- `--output` - Output Excel file path
+
+#### `excel_to_json.py`
+Converts Excel file to JSON format.
+
+**Usage:**
+```bash
+python scripts/excel_to_json.py EXCEL_FILE.xlsx [OUTPUT_FILE.json]
+```
+
+**Options:**
+- First argument: Excel file path
+- Second argument (optional): Output JSON file path (default: same name as Excel file)
+
+#### `json_to_excel.py`
+Converts JSON file to Excel format.
+
+**Usage:**
+```bash
+python scripts/json_to_excel.py JSON_FILE.json [OUTPUT_FILE.xlsx]
+```
+
+**Options:**
+- First argument: JSON file path
+- Second argument (optional): Output Excel file path (default: same name as JSON file)
+
+#### `add_metafield_to_json.py`
+Adds a new metafield column to all products in JSON file.
+
+**Usage:**
+```bash
+python scripts/add_metafield_to_json.py JSON_FILE.json NAMESPACE KEY TYPE [DEFAULT_VALUE]
+```
+
+**Example:**
+```bash
+python scripts/add_metafield_to_json.py \
+  exports/products.json \
+  shopify \
+  geyser_type \
+  list.single_line_text_field \
+  ""
+```
+
+**Common Metafield Types:**
+- `single_line_text_field` - Text
+- `number_integer` - Whole numbers
+- `number_decimal` - Decimal numbers
+- `list.single_line_text_field` - List/dropdown
+- `boolean` - True/False
+
+#### `upload_metafields.py`
+Uploads metafields to Shopify products.
+
+**Usage:**
+```bash
+python scripts/upload_metafields.py \
+  --products PRODUCTS_FILE.json \
+  --limit LIMIT
+```
+
+**Options:**
+- `--products` - Products JSON file with metafields
+- `--limit` - Number of products to upload (use small number for testing)
+
+**⚠️ Warning:** This will upload data to Shopify. Test with `--limit 10` first!
+
+#### `verify_metafields.py`
+Verifies metafields on a Shopify product.
+
+**Usage:**
+```bash
+python scripts/verify_metafields.py --product-id PRODUCT_ID
+```
+
+#### `delete_metafields.py`
+Deletes metafields from Shopify products.
+
+**Usage:**
+```bash
+python scripts/delete_metafields.py \
+  --products PRODUCTS_FILE.json \
+  --namespace NAMESPACE \
+  --key KEY
+```
+
+### Utility Scripts
+
+#### `load_shopify_handles.py`
+Loads and processes Shopify product handles.
+
+#### `generate_basic_metafields.py`
+Generates basic metafield structures.
+
+#### `fill_geyser_type.py`
+Example script for filling a specific metafield based on product titles.
 
 ---
 
-## 📜 License
+## 📊 Data Formats
 
-MIT License - See [LICENSE](LICENSE) file
+### JSON Structure
+
+Products JSON file structure:
+
+```json
+[
+  {
+    "id": "gid://shopify/Product/123456",
+    "title": "Product Title",
+    "handle": "product-handle",
+    "vendor": "Vendor Name",
+    "status": "ACTIVE",
+    "category_metafields": {
+      "power-source": "AC-powered",
+      "capacity": "80",
+      "geyser_type": "storage"
+    }
+  }
+]
+```
+
+### Excel Structure
+
+Excel files contain three sheets:
+
+1. **Summary** - Category information and statistics
+2. **Products** - Product data with metafield columns
+3. **Metafield Definitions** - Field specifications
+
+Metafield columns in Products sheet follow format:
+```
+Metafield: {namespace}.{key} [{type}]
+```
+
+Example:
+```
+Metafield: shopify.geyser_type [list.single_line_text_field]
+```
 
 ---
 
-## 🙏 Credits
+## 💡 Examples
 
-- **Shopify Product Taxonomy:** [github.com/Shopify/product-taxonomy](https://github.com/Shopify/product-taxonomy)
-- **OpenAI GPT-4o:** Category matching and data extraction
+### Example 1: Water Heaters (كيزر)
+
+```bash
+# 1. Fetch products
+python scripts/fetch_products.py --collection "كيزر" --output exports/geyser.json
+
+# 2. Fill metafields
+python scripts/fill_category_metafields.py \
+  --products exports/geyser.json \
+  --category "Home & Garden > Household Appliances > Water Heaters" \
+  --output exports/geyser_filled.json
+
+# 3. Create Excel report
+python scripts/create_metafields_excel.py \
+  --products exports/geyser_filled.json \
+  --output exports/geyser_metafields.xlsx
+
+# 4. After editing Excel, convert back to JSON
+python scripts/excel_to_json.py exports/geyser_metafields.xlsx
+
+# 5. Add custom metafield
+python scripts/add_metafield_to_json.py \
+  exports/geyser_metafields.json \
+  shopify geyser_type list.single_line_text_field ""
+
+# 6. Fill the new metafield (example)
+python scripts/fill_geyser_type.py exports/geyser_metafields.json
+
+# 7. Convert back to Excel
+python scripts/json_to_excel.py exports/geyser_metafields.json
+```
+
+### Example 2: Adding a New Metafield
+
+```bash
+# Add warranty period metafield
+python scripts/add_metafield_to_json.py \
+  exports/products.json \
+  shopify \
+  warranty-period \
+  single_line_text_field \
+  ""
+
+# Add weight metafield (number)
+python scripts/add_metafield_to_json.py \
+  exports/products.json \
+  shopify \
+  weight \
+  number_decimal \
+  "0"
+```
 
 ---
 
-## 🚀 Get Started
+## 🛠️ Project Structure
 
-1. **Read:** [COMPLETE_GUIDE.md](COMPLETE_GUIDE.md)
-2. **Setup:** Install dependencies and configure `.env`
-3. **Fetch taxonomy:** `python scripts/fetch_shopify_taxonomy.py`
-4. **Analyze:** `python scripts/category_metafields_workflow.py --tag YOUR_TAG`
-5. **Review & Edit:** Open and edit Excel file in `exports/tag_YOUR_TAG/`
-6. **Sync:** `python scripts/sync_excel_to_json.py ...`
-7. **Upload:** `python scripts/upload_metafields.py ...` (test with `--limit 10` first)
-8. **Enable filters:** `python scripts/create_metafield_definitions.py ...`
-9. **Verify:** `python scripts/verify_metafields.py --product-id ID`
+```
+metaFields/
+├── scripts/
+│   ├── fetch_products.py              # Fetch products from Shopify
+│   ├── fetch_shopify_taxonomy.py     # Download taxonomy (one-time)
+│   ├── fill_category_metafields.py   # AI metafield filling
+│   ├── create_metafields_excel.py    # Excel report generator
+│   ├── excel_to_json.py              # Excel → JSON converter
+│   ├── json_to_excel.py              # JSON → Excel converter
+│   ├── add_metafield_to_json.py      # Add new metafields
+│   ├── upload_metafields.py          # Upload to Shopify
+│   ├── verify_metafields.py          # Verify uploads
+│   ├── delete_metafields.py          # Delete metafields
+│   ├── load_shopify_handles.py       # Handle utilities
+│   ├── generate_basic_metafields.py   # Generate metafield structures
+│   └── fill_geyser_type.py            # Example: Fill specific metafield
+│
+├── data/
+│   ├── shopify_taxonomy_full.json    # Complete taxonomy (21K+ categories)
+│   ├── shopify_attributes.yml        # Metafield definitions
+│   └── shopify_values.yml            # Predefined values
+│
+├── exports/
+│   └── [your export files here]
+│
+├── .env                               # Environment variables (create this)
+├── requirements.txt                   # Python dependencies
+└── README.md                          # This file
+```
 
 ---
 
-**Questions?** Check the [Complete Guide](COMPLETE_GUIDE.md) for detailed documentation!
+## 🔍 Troubleshooting
 
-**Ready to fill your metafields!** 🎉
+### Common Issues
+
+#### 1. "Missing required environment variables"
+**Solution:** Create `.env` file with required variables (see Configuration section).
+
+#### 2. "File not found" errors with Arabic filenames
+**Solution:** Use full paths or ensure proper encoding in terminal.
+
+#### 3. Excel file has "Unnamed" columns
+**Solution:** This is normal for report-style Excel files. The data is still correct.
+
+#### 4. Metafield upload fails
+**Solution:**
+- Check API token permissions
+- Verify metafield namespace and key format
+- Test with `--limit 1` first
+- Check Shopify API version compatibility
+
+#### 5. AI filling returns incorrect values
+**Solution:**
+- Review product descriptions (more detail = better results)
+- Manually edit in Excel after AI filling
+- Adjust batch size if needed
+
+### Getting Help
+
+1. Check script help: `python scripts/SCRIPT_NAME.py --help`
+2. Verify `.env` configuration
+3. Check Shopify API status
+4. Review error messages for specific issues
+
+---
+
+## 📝 Notes
+
+- **Analysis Mode:** By default, scripts are in analysis mode and won't upload to Shopify
+- **Excel Editing:** Always review Excel files before uploading
+- **Backup:** Keep backups of JSON files before uploading
+- **Testing:** Always test with `--limit 10` before full uploads
+- **API Limits:** Shopify has rate limits; scripts include delays
+
+---
+
+## 📄 License
+
+MIT License - See LICENSE file for details
+
+---
+
+## 🙏 Acknowledgments
+
+- Shopify Product Taxonomy: [GitHub Repository](https://github.com/Shopify/product-taxonomy)
+- Uses OpenAI GPT models for AI-powered metafield filling
+
+---
+
+**Last Updated:** 2025
+

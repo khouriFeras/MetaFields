@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 Fill Category Metafields for Products
-Uses LLM to intelligently fill Shopify category metafields for all products.
+- Uses LLM to extract values
+- Formats values to match Shopify metafield definitions
+- (Optional) Exports a Matrixify-ready CSV
 """
 import json
 import os
@@ -10,11 +12,19 @@ import sys
 import re
 import html
 from pathlib import Path
-from typing import Dict, List, Optional, Any
-import openai
-from dotenv import load_dotenv
+from typing import Dict, List, Optional, Any, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+from dotenv import load_dotenv
+import importlib.util
+
+# OpenAI client import compatible with new SDKs
+try:
+    from openai import OpenAI
+    _OPENAI_CLIENT_CTOR = OpenAI
+except Exception:
+    import openai as openai_legacy  # fallback
+    _OPENAI_CLIENT_CTOR = openai_legacy.OpenAI  # type: ignore
 
 load_dotenv()
 
@@ -27,738 +37,696 @@ if sys.platform == 'win32':
         pass
 
 
+# --------------------------
+# Utilities
+# --------------------------
 def clean_html(html_text: str) -> str:
-    """Clean HTML text by removing tags and decoding entities."""
+    """
+    Clean HTML while preserving structure and ALL text content.
+    Preserves line breaks and list structures for better LLM understanding.
+    """
     if not html_text:
         return ""
-    # Remove HTML tags
+    
+    # Preserve line breaks from <br>, <p>, <div>, <li> tags
+    html_text = re.sub(r'<br\s*/?>', '\n', html_text, flags=re.IGNORECASE)
+    html_text = re.sub(r'</p>', '\n', html_text, flags=re.IGNORECASE)
+    html_text = re.sub(r'</div>', '\n', html_text, flags=re.IGNORECASE)
+    html_text = re.sub(r'</li>', '\n', html_text, flags=re.IGNORECASE)
+    html_text = re.sub(r'<li>', '• ', html_text, flags=re.IGNORECASE)
+    
+    # Remove all remaining HTML tags but preserve text
     clean_text = re.sub(r'<[^>]+>', ' ', html_text)
-    # Decode HTML entities
+    
+    # Decode HTML entities (like &amp; -> &, &nbsp; -> space)
     clean_text = html.unescape(clean_text)
-    # Remove extra whitespace
-    clean_text = re.sub(r'\s+', ' ', clean_text)
+    
+    # Normalize whitespace but preserve line breaks
+    lines = [line.strip() for line in clean_text.split('\n')]
+    clean_text = '\n'.join(line for line in lines if line)
+    
     return clean_text.strip()
 
-
 def load_json(file_path: str) -> Any:
-    """Load JSON file."""
     with open(file_path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-
 def save_json(file_path: str, data: Any) -> None:
-    """Save JSON file."""
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def slugify_label(s: str) -> str:
+    s = s.strip().lower()
+    s = re.sub(r'[\s/]+', '-', s)
+    s = s.replace('+', 'plus')
+    s = re.sub(r'[^a-z0-9\-._]', '', s)
+    s = re.sub(r'-{2,}', '-', s)
+    return s
 
+def is_list_type(t: str) -> bool:
+    return t.startswith('list.')
+
+def is_metaobject_ref(t: str) -> bool:
+    return 'metaobject_reference' in t
+
+def ensure_list(v: Any) -> List[str]:
+    if v is None or v == "":
+        return []
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    return [str(v).strip()]
+
+def extract_namespace_and_key(mf: Dict) -> Tuple[str, str]:
+    # >>> FIX: make namespace explicit (default to 'shopify' if omitted)
+    ns = mf.get('namespace') or 'shopify'
+    key = mf['key']
+    return ns, key
+
+
+# --------------------------
+# Product text for LLM
+# --------------------------
 def extract_product_info(product: Dict) -> str:
-    """Extract relevant product information for LLM analysis."""
+    """
+    Extract ALL product information including FULL HTML descriptions.
+    Reads descriptionHtml and all language variants to capture complete information.
+    """
     title = product.get('title', 'N/A')
     product_type = product.get('productType', 'N/A')
     vendor = product.get('vendor', 'N/A')
     tags = ', '.join(product.get('tags', []))
     
-    # Clean description (full description for complete spec extraction)
-    description_html = product.get('descriptionHtml', '')
-    description = clean_html(description_html)
-    # No truncation - send full description to capture all specs
-    # Important for fields like Energy efficiency class (HDR/SDR)
+    # Collect ALL description HTML fields to capture complete information
+    descriptions = []
     
-    # Get variant information (ALL variants for complete spec extraction)
+    # Main description
+    description_html = product.get('descriptionHtml', '')
+    if description_html:
+        desc_cleaned = clean_html(description_html)
+        if desc_cleaned:
+            descriptions.append(desc_cleaned)
+    
+    # Language-specific descriptions (might contain additional info)
+    description_ar = product.get('descriptionHtml_ar', '')
+    if description_ar and description_ar != description_html:
+        desc_ar_cleaned = clean_html(description_ar)
+        if desc_ar_cleaned and desc_ar_cleaned not in descriptions:
+            descriptions.append(f"[Arabic]\n{desc_ar_cleaned}")
+    
+    description_en = product.get('descriptionHtml_en', '')
+    if description_en and description_en != description_html:
+        desc_en_cleaned = clean_html(description_en)
+        if desc_en_cleaned and desc_en_cleaned not in descriptions:
+            descriptions.append(f"[English]\n{desc_en_cleaned}")
+    
+    # Combine all descriptions
+    full_description = '\n\n'.join(descriptions) if descriptions else 'No description available'
+
     variants_info = []
-    variants = product.get('variants', [])
-    for variant in variants:  # All variants (captures all sizes, colors, options)
-        v_title = variant.get('title', 'Default')
-        v_price = variant.get('price', 'N/A')
-        options = variant.get('selected_options', [])
-        options_str = ", ".join([f"{opt['name']}: {opt['value']}" for opt in options])
-        if options_str:
-            variants_info.append(f"{v_title} - {options_str} - {v_price}")
-        else:
-            variants_info.append(f"{v_title} - {v_price}")
+    variants_data = product.get('variants', [])
+    
+    # Handle GraphQL format (with edges/node) or direct list format
+    if isinstance(variants_data, dict) and 'edges' in variants_data:
+        # GraphQL format: variants.edges[].node
+        variants_list = [edge.get('node', {}) for edge in variants_data.get('edges', [])]
+    elif isinstance(variants_data, list):
+        # Direct list format
+        variants_list = variants_data
+    else:
+        variants_list = []
+    
+    for variant in variants_list:
+        if isinstance(variant, dict):
+            v_title = variant.get('title', 'Default')
+            v_price = variant.get('price', 'N/A')
+            options = variant.get('selectedOptions', variant.get('selected_options', []))
+            options_str = ", ".join([f"{opt.get('name', '')}: {opt.get('value', '')}" for opt in options if isinstance(opt, dict)])
+            if options_str:
+                variants_info.append(f"{v_title} - {options_str} - {v_price}")
+            else:
+                variants_info.append(f"{v_title} - {v_price}")
     
     variants_text = "\n  ".join(variants_info) if variants_info else "No variants"
-    
-    # Get existing metafields (might have additional context)
-    existing_metafields = product.get('metafields', {})
-    metafields_text = ""
-    if existing_metafields and len(existing_metafields) > 0:
-        mf_items = [f"{k}: {v}" for k, v in list(existing_metafields.items())[:5]]
-        metafields_text = f"\nExisting Metafields: {', '.join(mf_items)}"
-    
-    # Get pricing info
-    pricing = product.get('pricing', {})
+
     price_info = product.get('priceRange', 'N/A')
-    
+
     product_info = f"""
-Title: {title}
-Type: {product_type}
+╔════════════════════════════════════════════════════════════════╗
+║                    PRODUCT TITLE (READ CAREFULLY)              ║
+╚════════════════════════════════════════════════════════════════╝
+{title}
+
+╔════════════════════════════════════════════════════════════════╗
+║              PRODUCT DESCRIPTION (READ CAREFULLY)               ║
+╚════════════════════════════════════════════════════════════════╝
+{full_description}
+
+╔════════════════════════════════════════════════════════════════╗
+║                    ADDITIONAL PRODUCT INFO                     ║
+╚════════════════════════════════════════════════════════════════╝
+Product Type: {product_type}
 Vendor: {vendor}
 Price Range: {price_info}
 Tags: {tags}
-Description: {description}
+
 Variants:
-  {variants_text}{metafields_text}
+  {variants_text}
 """
-    
     return product_info.strip()
 
 
-def fill_metafields_batch(
-    products: List[Dict],
-    metafield_definitions: List[Dict],
-    category_name: str,
-    model: str = "gpt-4o",
-    batch_size: int = 10
-) -> List[Dict]:
+# --------------------------
+# VALUE FORMATTER (the core fix)
+# --------------------------
+def map_value_to_handle(label: str, mf: Dict) -> Optional[str]:
     """
-    Fill metafields for a batch of products using LLM.
-    Args:
-        products: List of products to process
-        metafield_definitions: List of metafield definitions from category
-        category_name: Name of the Shopify category
-        model: OpenAI model to use
-        batch_size: Number of products to process in each batch
-    Returns:
-        List of products with filled metafields
+    For metaobject_reference fields, convert a human label (e.g., 'HDR10+') to a metaobject handle
+    via mapping in metafield definition: mf['value_to_handle'].
     """
-    print(f"\n Filling metafields for {len(products)} products using {model}...")
-    print(f" Category: {category_name}")
-    print(f"  Metafields to fill: {len(metafield_definitions)}")
-    # Prepare metafield definitions for prompt (with available values for better selection)
-    metafield_descriptions = []
+    if not label:
+        return None
+    mapping = (mf.get('value_to_handle') or {})
+    # Try exact, case-insensitive
+    for k, v in mapping.items():
+        if k.strip().lower() == label.strip().lower():
+            return v.strip()
+    # No mapping → cannot safely guess handle
+    return None
+
+def normalize_text_value(label: str, mf: Dict) -> str:
+    """For plain text types, keep label as-is (Matrixify expects plain values, not handles or prefixes)."""
+    return label.strip()
+
+def format_value_for_type(raw_value: Any, mf: Dict) -> Optional[str]:
+    """
+    Return a Matrixify-ready string for the metafield column, or None if not resolvable.
+    Rules:
+      - list types: JSON array format (Matrixify requirement)
+      - single_line_text_field: plain text
+    """
+    import json
+    mf_type = mf['type']
+    labels = ensure_list(raw_value)
+    if not labels:
+        return None
+
+    # For list types, Matrixify expects JSON array format
+    if is_list_type(mf_type):
+        # Filter out None/empty values and normalize
+        values = [normalize_text_value(x, mf) for x in labels if x]
+        if not values:
+            return None
+        # Return as JSON array string
+        return json.dumps(values, ensure_ascii=False)
+    else:
+        # Single value field
+        return normalize_text_value(labels[0], mf)
+
+
+# --------------------------
+# LLM wrappers (kept from your code, minor tweaks)
+# --------------------------
+def build_metafields_prompt_section(metafield_definitions: List[Dict]) -> str:
+    blocks = []
     for mf in metafield_definitions:
         validations = ""
         if mf.get('validations'):
             val_list = [f"{v['name']}: {v['value']}" for v in mf['validations']]
             validations = f" (Validations: {', '.join(val_list)})"
-        
-        # Include available values for list fields to help AI choose correctly
+
         values_info = ""
-        if mf.get('values') and len(mf['values']) > 0:
-            # Show first 15 values (keep prompt reasonable)
-            value_sample = mf['values'][:15]
-            values_str = ', '.join(value_sample)
+        if mf.get('values'):
+            sample = mf['values'][:15]
+            values_str = ', '.join(sample)
             if len(mf['values']) > 15:
                 values_str += f" (and {len(mf['values'])-15} more)"
             values_info = f"\n  Available values: {values_str}"
-        
-        desc = mf.get('description', '')
-        metafield_descriptions.append(
-            f"- {mf['name']} (key: {mf['key']}, type: {mf['type']}){validations}\n"
-            f"  Description: {desc if desc else 'No description'}{values_info}"
+
+        desc = mf.get('description', '') or 'No description'
+        ns, key = extract_namespace_and_key(mf)
+        blocks.append(
+            f"- {mf.get('name','(no name)')} (ns: {ns}, key: {key}, type: {mf['type']}){validations}\n"
+            f"  Description: {desc}{values_info}"
         )
-    metafields_text = "\n".join(metafield_descriptions)
-    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    
-    results = []
-    total_batches = (len(products) + batch_size - 1) // batch_size
-    
-    for batch_idx in range(0, len(products), batch_size):
-        batch = products[batch_idx:batch_idx + batch_size]
-        current_batch = (batch_idx // batch_size) + 1
-        
-        print(f"\n  Batch {current_batch}/{total_batches} ({len(batch)} products)...")
-        
-        # Prepare batch product info
-        batch_products_info = []
-        for i, product in enumerate(batch, 1):
-            product_info = extract_product_info(product)
-            batch_products_info.append(f"PRODUCT {i}:\n{product_info}")
-        
-        products_text = "\n\n".join(batch_products_info)
-        
-        # Create prompt
-        prompt = f"""You are filling Shopify category metafields for products.
+    return "\n".join(blocks)
 
-CATEGORY: {category_name}
+def openai_client():
+    return _OPENAI_CLIENT_CTOR(api_key=os.getenv("OPENAI_API_KEY"))
 
-METAFIELDS TO FILL:
-{metafields_text}
+def call_llm(model: str, system: str, user: str, max_retries: int = 3) -> str:
+    """Call LLM with retry logic for rate limits."""
+    client = openai_client()
+    params = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    # Be compatible with both SDKs
+    if model.startswith('gpt-5'):
+        params["max_completion_tokens"] = 8000
+    else:
+        params["max_tokens"] = 1000
+        params["temperature"] = 0.2
 
-PRODUCTS:
-{products_text}
-
-INSTRUCTIONS:
-1. READ THE ENTIRE DESCRIPTION CAREFULLY - Technical specs are often mentioned throughout
-2. For list.single_line_text_field: SELECT from "Available values" provided above
-3. Extract values from: Title, FULL Description (read all of it!), Variants, Tags
-4. Look for technical specifications like:
-   - Energy efficiency, HDR/SDR ratings (often in descriptions)
-   - Screen size, resolution (often in variants or title)
-   - Color, material (often in variants)
-   - Audio technology, connectivity (in descriptions)
-5. For fields with available values: ONLY use values from the list
-6. IMPORTANT: Avoid selecting "Other" - try to find the closest specific match
-7. Match variations to standard values (e.g., "Ultra HD" = "4K", "Stereo" might match a specific audio tech)
-8. If truly cannot determine a value, use null (NOT "Other")
-9. Only use "Other" if the product explicitly has a unique feature not in the list
-10. Be thorough and read ALL product information before deciding
-
-Return ONLY valid JSON in this EXACT format:
-{{
-  "products": [
-    {{
-      "product_index": 1,
-      "metafields": {{
-        "metafield_key1": "value1",
-        "metafield_key2": ["value1", "value2"],
-        "metafield_key3": null
-      }}
-    }},
-    ...
-  ]
-}}
-
-Return only the JSON, no other text."""
-        
+    for attempt in range(max_retries):
         try:
-            # GPT-5 models have different API parameters than GPT-4
-            api_params = {
-                "model": model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a product data expert. You analyze products and extract metafield values accurately. You always return valid JSON."
-                    },
-                    {"role": "user", "content": prompt}
-                ]
-            }
-            
-            # GPT-5 models use max_completion_tokens and don't support custom temperature
-            if model.startswith('gpt-5'):
-                # GPT-5 uses reasoning tokens + output tokens, so we need more
-                # For gpt-5-nano: reasoning (~4000) + output (~2000) = 6000+ total
-                api_params["max_completion_tokens"] = 12000
-                # temperature=1 is default for GPT-5, don't set it
-            else:
-                api_params["max_tokens"] = 4000
-                api_params["temperature"] = 0.2
-            
-            response = client.chat.completions.create(**api_params)
-            
-            result_text = response.choices[0].message.content
-            
-            # Handle empty responses (GPT-5 reasoning token issue)
-            if not result_text or len(result_text.strip()) == 0:
-                print(f"    ⚠️  Empty response - GPT-5 used all tokens for reasoning")
-                print(f"    💡 Increasing max_completion_tokens to 16000 and retrying...")
-                
-                # Retry with more tokens
-                if model.startswith('gpt-5'):
-                    api_params["max_completion_tokens"] = 16000
-                    response = client.chat.completions.create(**api_params)
-                    result_text = response.choices[0].message.content
-                    
-                    if not result_text or len(result_text.strip()) == 0:
-                        print(f"    ❌ Still empty after retry - skipping batch")
-                        raise ValueError("Empty response even with 16000 tokens")
-            
-            result_text = result_text.strip()
-            
-            # Remove markdown code blocks if present
-            if result_text.startswith("```"):
-                result_text = result_text.split("```")[1]
-                if result_text.startswith("json"):
-                    result_text = result_text[4:]
-                result_text = result_text.strip()
-            
-            batch_result = json.loads(result_text)
-            
-            # Merge metafields back to products
-            for i, product_data in enumerate(batch_result.get("products", [])):
-                if i < len(batch):
-                    product = batch[i].copy()
-                    product["category_metafields"] = product_data.get("metafields", {})
-                    results.append(product)
-            
-            print(f"    Processed {len(batch)} products")
-            
+            resp = client.chat.completions.create(**params)
+            txt = resp.choices[0].message.content or ""
+            txt = txt.strip()
+            if txt.startswith("```"):
+                parts = txt.split("```")
+                if len(parts) >= 2:
+                    txt = parts[1]
+                    if txt.startswith("json"):
+                        txt = txt[4:]
+                    txt = txt.strip()
+            return txt
         except Exception as e:
-            print(f"    Error processing batch: {e}")
-            # Add products without metafields
-            for product in batch:
-                product_copy = product.copy()
-                product_copy["category_metafields"] = {}
-                results.append(product_copy)
-    
-    return results
-
-
-def process_single_product(
-    product: Dict,
-    product_index: int,
-    total_products: int,
-    metafield_definitions: List[Dict],
-    metafields_text: str,
-    category_name: str,
-    model: str
-) -> Dict:
-    """
-    Process a single product with metafield filling (for parallel processing).
-    
-    Returns:
-        Product with filled category_metafields
-    """
-    print(f"  [{product_index}/{total_products}] {product.get('title', 'N/A')[:60]}...")
-    
-    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    product_info = extract_product_info(product)
-    
-    # Create prompt
-    prompt = f"""You are filling Shopify category metafields for a product.
-
-CATEGORY: {category_name}
-
-METAFIELDS TO FILL:
-{metafields_text}
-
-PRODUCT:
-{product_info}
-
-INSTRUCTIONS:
-1. READ THE ENTIRE DESCRIPTION CAREFULLY - Technical specs are often mentioned throughout
-2. For list.single_line_text_field: SELECT from "Available values" provided above
-3. Extract values from: Title, FULL Description (read all of it!), Variants, Tags
-4. Look for technical specifications like:
-   - Energy efficiency, HDR/SDR ratings (often in descriptions)
-   - Screen size, resolution (often in variants or title)
-   - Color, material (often in variants)
-   - Audio technology, connectivity (in descriptions)
-5. For fields with available values: ONLY use values from the list
-6. IMPORTANT: Avoid selecting "Other" - try to find the closest specific match
-7. Match variations to standard values (e.g., "Ultra HD" = "4K", "Stereo" might match a specific audio tech)
-8. If truly cannot determine a value, use null (NOT "Other")
-9. Only use "Other" if the product explicitly has a unique feature not in the list
-10. Be thorough and read ALL product information before deciding
-
-Return ONLY valid JSON in this EXACT format:
-{{
-  "metafields": {{
-    "metafield_key1": "value1",
-    "metafield_key2": ["value1", "value2"],
-    "metafield_key3": null
-  }}
-}}
-
-Return only the JSON, no other text."""
-    
-    try:
-        # GPT-5 models have different API parameters than GPT-4
-        api_params = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a product data expert. You analyze products and extract metafield values accurately. You always return valid JSON."
-                },
-                {"role": "user", "content": prompt}
-            ]
-        }
-        
-        # GPT-5 models use max_completion_tokens and don't support custom temperature
-        if model.startswith('gpt-5'):
-            # GPT-5 uses reasoning tokens, give plenty of room
-            api_params["max_completion_tokens"] = 8000
-        else:
-            api_params["max_tokens"] = 1000
-            api_params["temperature"] = 0.2
-        
-        response = client.chat.completions.create(**api_params)
-        result_text = response.choices[0].message.content
-        
-        # Handle empty responses
-        if not result_text or len(result_text.strip()) == 0:
-            print(f"    ⚠️  Empty response - retrying with more tokens...")
-            if model.startswith('gpt-5'):
-                api_params["max_completion_tokens"] = 16000
-                response = client.chat.completions.create(**api_params)
-                result_text = response.choices[0].message.content
-        
-        if not result_text:
-            raise ValueError("Empty response from API")
-            
-        result_text = result_text.strip()
-        
-        # Remove markdown code blocks if present
-        if result_text.startswith("```"):
-            result_text = result_text.split("```")[1]
-            if result_text.startswith("json"):
-                result_text = result_text[4:]
-            result_text = result_text.strip()
-        
-        result = json.loads(result_text)
-        
-        product_copy = product.copy()
-        product_copy["category_metafields"] = result.get("metafields", {})
-        
-        # Show filled count
-        filled_count = sum(1 for v in result.get("metafields", {}).values() if v is not None)
-        print(f"    ✅ Filled {filled_count}/{len(metafield_definitions)} metafields")
-        
-        return product_copy
-        
-    except Exception as e:
-        print(f"    ❌ Error: {e}")
-        product_copy = product.copy()
-        product_copy["category_metafields"] = {}
-        return product_copy
-
-
-def fill_metafields_parallel(
-    products: List[Dict],
-    metafield_definitions: List[Dict],
-    category_name: str,
-    model: str = "gpt-5-nano",
-    max_workers: int = 5
-) -> List[Dict]:
-    """
-    Fill metafields for products using parallel workers (FAST!).
-    
-    Args:
-        products: List of products to process
-        metafield_definitions: List of metafield definitions from category
-        category_name: Name of the Shopify category
-        model: OpenAI model to use
-        max_workers: Number of parallel workers (default: 5)
-        
-    Returns:
-        List of products with filled metafields
-    """
-    print(f"\n🤖 Filling metafields for {len(products)} products using {model}...")
-    print(f"⚡ Parallel mode with {max_workers} workers (FAST!)")
-    print(f"📋 Category: {category_name}")
-    print(f"🏷️  Metafields to fill: {len(metafield_definitions)}")
-    
-    # Prepare metafield definitions text (reuse for all workers)
-    metafield_descriptions = []
-    for mf in metafield_definitions:
-        validations = ""
-        if mf.get('validations'):
-            val_list = [f"{v['name']}: {v['value']}" for v in mf['validations']]
-            validations = f" (Validations: {', '.join(val_list)})"
-        
-        # Include available values
-        values_info = ""
-        if mf.get('values') and len(mf['values']) > 0:
-            value_sample = mf['values'][:15]
-            values_str = ', '.join(value_sample)
-            if len(mf['values']) > 15:
-                values_str += f" (and {len(mf['values'])-15} more)"
-            values_info = f"\n  Available values: {values_str}"
-        
-        desc = mf.get('description', '')
-        metafield_descriptions.append(
-            f"- {mf['name']} (key: {mf['key']}, type: {mf['type']}){validations}\n"
-            f"  Description: {desc if desc else 'No description'}{values_info}"
-        )
-    
-    metafields_text = "\n".join(metafield_descriptions)
-    
-    # Process products in parallel
-    start_time = time.time()
-    results = [None] * len(products)  # Preserve order
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks
-        future_to_index = {
-            executor.submit(
-                process_single_product,
-                product,
-                i + 1,
-                len(products),
-                metafield_definitions,
-                metafields_text,
-                category_name,
-                model
-            ): i
-            for i, product in enumerate(products)
-        }
-        
-        # Collect results as they complete
-        completed = 0
-        for future in as_completed(future_to_index):
-            index = future_to_index[future]
-            try:
-                result = future.result()
-                results[index] = result
-                completed += 1
+            error_str = str(e)
+            if "429" in error_str or "rate_limit" in error_str.lower():
+                # Extract wait time from error message if available
+                import re
+                wait_match = re.search(r'Please try again in ([\d.]+)s', error_str)
+                wait_time = float(wait_match.group(1)) if wait_match else (2 ** attempt) + 1
+                wait_time = min(wait_time, 60)  # Cap at 60 seconds
                 
-                if completed % 10 == 0:
-                    elapsed = time.time() - start_time
-                    rate = completed / elapsed
-                    remaining = (len(products) - completed) / rate
-                    print(f"\n  📊 Progress: {completed}/{len(products)} ({completed/len(products)*100:.1f}%) - ETA: {remaining:.0f}s")
-            except Exception as e:
-                print(f"    ❌ Worker error for product {index}: {e}")
-                results[index] = products[index].copy()
-                results[index]["category_metafields"] = {}
-    
-    elapsed = time.time() - start_time
-    print(f"\n  ⚡ Completed in {elapsed:.1f}s ({len(products)/elapsed:.1f} products/sec)")
-    
-    return results
+                if attempt < max_retries - 1:
+                    print(f"    ⏳ Rate limit hit, waiting {wait_time:.1f}s before retry {attempt + 1}/{max_retries}...")
+                    time.sleep(wait_time)
+                    continue
+            # If not rate limit or final attempt, raise
+            raise
 
 
-def fill_metafields_single(
-    products: List[Dict],
-    metafield_definitions: List[Dict],
-    category_name: str,
-    model: str = "gpt-4o"
-) -> List[Dict]:
-    """
-    Fill metafields for products one at a time (slower but more accurate).
-    
-    Args:
-        products: List of products to process
-        metafield_definitions: List of metafield definitions from category
-        category_name: Name of the Shopify category
-        model: OpenAI model to use
-        
-    Returns:
-        List of products with filled metafields
-    """
-    print(f"\n Filling metafields for {len(products)} products (single mode) using {model}...")
-    print(f" Category: {category_name}")
-    print(f"  Metafields to fill: {len(metafield_definitions)}")
-    
-    # Prepare metafield definitions for prompt (with available values)
-    metafield_descriptions = []
+# --------------------------
+# Extraction modes (kept, but use new formatter)
+# --------------------------
+def merge_llm_result_into_product(product: Dict, result_json: Dict, metafield_definitions: List[Dict]) -> Dict:
+    raw = result_json.get("metafields", {}) if "metafields" in result_json else result_json.get("products", [{}])[0].get("metafields", {})
+    mf_out: Dict[str, Any] = {}
     for mf in metafield_definitions:
-        validations = ""
-        if mf.get('validations'):
-            val_list = [f"{v['name']}: {v['value']}" for v in mf['validations']]
-            validations = f" (Validations: {', '.join(val_list)})"
-        
-        # Include available values for list fields
-        values_info = ""
-        if mf.get('values') and len(mf['values']) > 0:
-            value_sample = mf['values'][:15]
-            values_str = ', '.join(value_sample)
-            if len(mf['values']) > 15:
-                values_str += f" (and {len(mf['values'])-15} more)"
-            values_info = f"\n  Available values: {values_str}"
-        
-        desc = mf.get('description', '')
-        metafield_descriptions.append(
-            f"- {mf['name']} (key: {mf['key']}, type: {mf['type']}){validations}\n"
-            f"  Description: {desc if desc else 'No description'}{values_info}"
-        )
-    
-    metafields_text = "\n".join(metafield_descriptions)
-    
-    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    
+        key = mf["key"]
+        if key in raw:
+            mf_out[key] = raw[key]
+    product_copy = product.copy()
+    product_copy["category_metafields"] = mf_out
+    return product_copy
+
+def fill_metafields_single(products: List[Dict], metafield_definitions: List[Dict], category_name: str, model: str = "gpt-4o-mini") -> List[Dict]:
     results = []
-    
+    section = build_metafields_prompt_section(metafield_definitions)
     for i, product in enumerate(products, 1):
-        print(f"  [{i}/{len(products)}] {product.get('title', 'N/A')[:50]}...")
-        
+        print(f"  [{i}/{len(products)}] {product.get('title','N/A')[:60]}...")
         product_info = extract_product_info(product)
-        
-        # Create prompt
         prompt = f"""You are filling Shopify category metafields for a product.
 
 CATEGORY: {category_name}
 
 METAFIELDS TO FILL:
-{metafields_text}
+{section}
 
-PRODUCT:
+PRODUCT INFORMATION:
 {product_info}
 
-INSTRUCTIONS:
-1. READ THE ENTIRE DESCRIPTION CAREFULLY - Technical specs are often mentioned throughout
-2. For list.single_line_text_field: SELECT from "Available values" provided above
-3. Extract values from: Title, FULL Description (read all of it!), Variants, Tags
-4. Look for technical specifications like:
-   - Energy efficiency, HDR/SDR ratings (often in descriptions)
-   - Screen size, resolution (often in variants or title)
-   - Color, material (often in variants)
-   - Audio technology, connectivity (in descriptions)
-5. For fields with available values: ONLY use values from the list
-6. IMPORTANT: Avoid selecting "Other" - try to find the closest specific match
-7. Match variations to standard values (e.g., "Ultra HD" = "4K", "Stereo" might match a specific audio tech)
-8. If truly cannot determine a value, use null (NOT "Other")
-9. Only use "Other" if the product explicitly has a unique feature not in the list
-10. Be thorough and read ALL product information before deciding
+CRITICAL RULES - NO HALLUCINATION:
 
-Return ONLY valid JSON in this EXACT format:
+1. READ THE TITLE FIRST - The product title often contains the most important specifications:
+   - Look for numbers (capacity, size, dimensions, power, etc.)
+   - Look for brand names, model numbers, types
+   - Look for key features mentioned in the title
+   - Example: "كيزر كهرباء ايطالي 80 لتر نوع اريستون- ايكو" contains:
+     * Capacity: 80 لتر (80 liters)
+     * Type: اريستون (Ariston brand)
+     * Power: كهرباء (electric)
+
+2. READ THE DESCRIPTION CAREFULLY - The description contains detailed specifications:
+   - Look in the "PRODUCT DESCRIPTION" section above
+   - Read all paragraphs and bullet points
+   - Check both Arabic and English descriptions if available
+   - Extract all technical specifications mentioned
+
+3. ONLY extract information that is EXPLICITLY stated in the product data:
+   - Product TITLE (check this FIRST - it often has key specs)
+   - Product DESCRIPTION (read carefully - contains detailed info)
+   - Variants and their selected options (Color, Size, etc.)
+   - Tags
+   - Product type
+
+4. DO NOT infer, guess, or assume ANY values based on:
+   - Product category or type
+   - Similar products
+   - Common characteristics
+   - Your knowledge of similar items
+
+5. If information is NOT explicitly found in the product data:
+   - Return null for that metafield
+   - DO NOT make up values
+   - DO NOT use common/default values
+   - Empty/null is the CORRECT answer when information is missing
+
+6. For list fields: return array ONLY when multiple values are explicitly stated.
+
+7. For single values: return the exact value as stated, or null if not found.
+
+8. CRITICAL - UNIT HANDLING:
+   - Extract the EXACT NUMBER as stated in the product (title, description, etc.)
+   - DO NOT convert units (liters to gallons, kg to lbs, etc.)
+   - If product says "80 لتر" (80 liters) → extract "80" (the number, not converted)
+   - If product says "50 gallons" → extract "50" (the number)
+   - The metafield name may indicate the expected unit, but extract the literal number from the product
+   - Only use the number that appears in the product data itself
+
+EXAMPLES:
+- Title: "كيزر كهرباء ايطالي 80 لتر نوع اريستون- ايكو"
+  → Extract capacity: "80" (from "80 لتر" in title)
+  → Extract power-source: ["AC-powered"] (from "كهرباء" = electric in title)
+  → Extract brand/type: "اريستون" (Ariston mentioned in title)
+  
+- If description says "Color: Black" or variant has "Color: Black" → use "Black"
+- If NO mention of color anywhere → use null (NOT a guessed color)
+- If description says "140 watts" → extract "140" for power
+- If product title says "80 لتر" (80 liters) and metafield is capacity-gallons → extract "80" (NOT converted to 21)
+- If product says "50 kg" and metafield expects lbs → extract "50" (NOT converted to 110)
+- If NO mention of capacity → use null (NOT a guessed value)
+
+IMPORTANT: The TITLE is often the most reliable source for key specifications. Read it word by word, including Arabic text.
+
+Return ONLY valid JSON (no comments allowed):
 {{
   "metafields": {{
     "metafield_key1": "value1",
-    "metafield_key2": ["value1", "value2"],
+    "metafield_key2": ["value1","value2"],
     "metafield_key3": null
   }}
-}}
-
-Return only the JSON, no other text."""
-        
+}}"""
         try:
-            # GPT-5 models have different API parameters than GPT-4
-            api_params = {
-                "model": model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a product data expert. You analyze products and extract metafield values accurately. You always return valid JSON."
-                    },
-                    {"role": "user", "content": prompt}
-                ]
-            }
-            
-            # GPT-5 models use max_completion_tokens and don't support custom temperature
-            if model.startswith('gpt-5'):
-                # GPT-5 uses reasoning tokens + output tokens, so we need more
-                api_params["max_completion_tokens"] = 4000
-                # temperature=1 is default for GPT-5, don't set it
-            else:
-                api_params["max_tokens"] = 1000
-                api_params["temperature"] = 0.2
-            
-            response = client.chat.completions.create(**api_params)
-            
-            result_text = response.choices[0].message.content.strip()
-            
-            # Remove markdown code blocks if present
-            if result_text.startswith("```"):
-                result_text = result_text.split("```")[1]
-                if result_text.startswith("json"):
-                    result_text = result_text[4:]
-                result_text = result_text.strip()
-            
-            result = json.loads(result_text)
-            
-            product_copy = product.copy()
-            product_copy["category_metafields"] = result.get("metafields", {})
-            results.append(product_copy)
-            
-            # Show filled metafields count
-            filled_count = sum(1 for v in result.get("metafields", {}).values() if v is not None)
-            print(f"    ✅ Filled {filled_count}/{len(metafield_definitions)} metafields")
-            
+            txt = call_llm(model, system="You extract ONLY explicitly stated product information. NEVER guess or infer values. Extract EXACT numbers as stated - DO NOT convert units (liters to gallons, kg to lbs, etc.). Read the TITLE carefully first - it often contains key specifications. Use null when information is not found in the product data. Return valid JSON.", user=prompt)
+            result = json.loads(txt)
+            results.append(merge_llm_result_into_product(product, result, metafield_definitions))
         except Exception as e:
-            print(f"    ❌ Error: {e}")
-            product_copy = product.copy()
-            product_copy["category_metafields"] = {}
-            results.append(product_copy)
-    
+            print(f"    Error: {e}")
+            p = product.copy()
+            p["category_metafields"] = {}
+            results.append(p)
+    return results
+
+def fill_metafields_parallel(products: List[Dict], metafield_definitions: List[Dict], category_name: str, model: str = "gpt-4o-mini", max_workers: int = 3) -> List[Dict]:
+    # same logic as your parallel version but calling fill_metafields_single per item
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    section = build_metafields_prompt_section(metafield_definitions)
+    def _one(p):
+        product_info = extract_product_info(p)
+        prompt = f"""You are filling Shopify category metafields for a product.
+
+CATEGORY: {category_name}
+
+METAFIELDS TO FILL:
+{section}
+
+PRODUCT INFORMATION:
+{product_info}
+
+CRITICAL RULES - NO HALLUCINATION:
+
+1. READ THE TITLE FIRST - The product title often contains the most important specifications:
+   - Look for numbers (capacity, size, dimensions, power, etc.)
+   - Look for brand names, model numbers, types
+   - Look for key features mentioned in the title
+   - Example: "كيزر كهرباء ايطالي 80 لتر نوع اريستون- ايكو" contains:
+     * Capacity: 80 لتر (80 liters)
+     * Type: اريستون (Ariston brand)
+     * Power: كهرباء (electric)
+
+2. READ THE DESCRIPTION CAREFULLY - The description contains detailed specifications:
+   - Look in the "PRODUCT DESCRIPTION" section above
+   - Read all paragraphs and bullet points
+   - Check both Arabic and English descriptions if available
+   - Extract all technical specifications mentioned
+
+3. ONLY extract information that is EXPLICITLY stated in the product data:
+   - Product TITLE (check this FIRST - it often has key specs)
+   - Product DESCRIPTION (read carefully - contains detailed info)
+   - Variants and their selected options (Color, Size, etc.)
+   - Tags
+   - Product type
+
+4. DO NOT infer, guess, or assume ANY values based on:
+   - Product category or type
+   - Similar products
+   - Common characteristics
+   - Your knowledge of similar items
+
+5. If information is NOT explicitly found in the product data:
+   - Return null for that metafield
+   - DO NOT make up values
+   - DO NOT use common/default values
+   - Empty/null is the CORRECT answer when information is missing
+
+6. For list fields: return array ONLY when multiple values are explicitly stated.
+
+7. For single values: return the exact value as stated, or null if not found.
+
+8. CRITICAL - UNIT HANDLING:
+   - Extract the EXACT NUMBER as stated in the product (title, description, etc.)
+   - DO NOT convert units (liters to gallons, kg to lbs, etc.)
+   - If product says "80 لتر" (80 liters) → extract "80" (the number, not converted)
+   - If product says "50 gallons" → extract "50" (the number)
+   - The metafield name may indicate the expected unit, but extract the literal number from the product
+   - Only use the number that appears in the product data itself
+
+EXAMPLES:
+- Title: "كيزر كهرباء ايطالي 80 لتر نوع اريستون- ايكو"
+  → Extract capacity: "80" (from "80 لتر" in title)
+  → Extract power-source: ["AC-powered"] (from "كهرباء" = electric in title)
+  → Extract brand/type: "اريستون" (Ariston mentioned in title)
+  
+- If description says "Color: Black" or variant has "Color: Black" → use "Black"
+- If NO mention of color anywhere → use null (NOT a guessed color)
+- If description says "140 watts" → extract "140" for power
+- If product title says "80 لتر" (80 liters) and metafield is capacity-gallons → extract "80" (NOT converted to 21)
+- If product says "50 kg" and metafield expects lbs → extract "50" (NOT converted to 110)
+- If NO mention of capacity → use null (NOT a guessed value)
+
+IMPORTANT: The TITLE is often the most reliable source for key specifications. Read it word by word, including Arabic text.
+
+Return ONLY valid JSON (no comments allowed):
+{{
+  "metafields": {{
+    "metafield_key1": "value1",
+    "metafield_key2": ["value1","value2"],
+    "metafield_key3": null
+  }}
+}}"""
+        try:
+            txt = call_llm(model, system="You extract ONLY explicitly stated product information. NEVER guess or infer values. Extract EXACT numbers as stated - DO NOT convert units (liters to gallons, kg to lbs, etc.). Read the TITLE carefully first - it often contains key specifications. Use null when information is not found in the product data. Return valid JSON.", user=prompt)
+            result = json.loads(txt)
+            return merge_llm_result_into_product(p, result, metafield_definitions)
+        except Exception as e:
+            print(f"    Error: {e}")
+            q = p.copy()
+            q["category_metafields"] = {}
+            return q
+
+    results = [None]*len(products)
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        fut_map = {ex.submit(_one, p): i for i,p in enumerate(products)}
+        for fut in as_completed(fut_map):
+            idx = fut_map[fut]
+            results[idx] = fut.result()
     return results
 
 
+# --------------------------
+# MATRIXIFY CSV EXPORT (new)
+# --------------------------
+def matrixify_header(mf: Dict, check_products_for_handles: List[Dict] = None) -> str:
+    """
+    Generate Matrixify header for a metafield.
+    If check_products_for_handles is provided, checks actual product values
+    to determine if this should be metaobject_reference type.
+    """
+    ns, key = extract_namespace_and_key(mf)
+    mf_type = mf.get('type', '')
+    
+    # Check if this should be metaobject_reference instead of single_line_text_field
+    # Matrixify reports these fields as metaobject_reference when they contain handles
+    if 'list.single_line_text_field' in mf_type:
+        # Check if any actual product values look like handles (contain __)
+        is_metaobject = False
+        
+        if check_products_for_handles:
+            for product in check_products_for_handles:
+                mf_values = product.get("category_metafields", {}).get(key)
+                if mf_values:
+                    values_list = mf_values if isinstance(mf_values, list) else [mf_values]
+                    if any('__' in str(v) for v in values_list if v):
+                        is_metaobject = True
+                        break
+        
+        if not is_metaobject:
+            values = mf.get('values', [])
+            has_handles = any('__' in str(v) for v in values)
+            has_handle_mapping = bool(mf.get('value_to_handle'))
+            is_metaobject = has_handles or has_handle_mapping
+        
+        if is_metaobject:
+            mf_type = mf_type.replace('single_line_text_field', 'metaobject_reference')
+    
+    return f"Metafield: {ns}.{key} [{mf_type}]"
+
+def to_matrixify_row(product: Dict, metafield_definitions: List[Dict], handle_field: str = "handle", header_map: Dict[str, str] = None) -> Dict[str, Any]:
+    """
+    Build a single Matrixify row:
+    - Must include 'Handle' (or you can change to 'ID' if that's your workflow).
+    - Include 'Title' column for product identification
+    - One column per metafield: "Metafield: namespace.key [type]"
+    - header_map: optional dict mapping metafield key to header name (if provided, use this instead of generating)
+    """
+    row: Dict[str, Any] = {}
+    handle = product.get(handle_field) or product.get("handle") or product.get("Handle")
+    if not handle:
+        handle = product.get('onlineStoreUrl', '').rsplit('/', 1)[-1] if product.get('onlineStoreUrl') else None
+    row["Handle"] = handle or ""
+    
+    row["Title"] = product.get("title", product.get("Title", ""))
+
+    mf_values = product.get("category_metafields", {})
+    for mf in metafield_definitions:
+        if header_map and mf["key"] in header_map:
+            col = header_map[mf["key"]]
+        else:
+            col = matrixify_header(mf)
+        raw = mf_values.get(mf["key"])
+        formatted = format_value_for_type(raw, mf) 
+        row[col] = formatted if formatted is not None else ""
+    return row
+
+def write_matrixify_csv(products: List[Dict], metafield_definitions: List[Dict], csv_path: str, handle_field: str = "handle") -> None:
+    import csv
+
+    headers = []
+    header_map = {}  
+    for mf in metafield_definitions:
+        header = matrixify_header(mf, check_products_for_handles=products)
+        headers.append(header)
+        header_map[mf["key"]] = header
+    
+    fieldnames = ["Handle", "Title"] + headers
+    Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for p in products:
+            w.writerow(to_matrixify_row(p, metafield_definitions, handle_field=handle_field, header_map=header_map))
+
+
 def main():
-    """Main function."""
     import argparse
-    
-    parser = argparse.ArgumentParser(
-        description="Fill category metafields for products using LLM",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Fill metafields for water-pump products (batch mode)
-  python scripts/fill_category_metafields.py \\
-    --products exports/tag_water-pump/products_tag_water-pump_with_lang.json \\
-    --mapping exports/tag_water-pump/tag_water-pump_category_mapping.json \\
-    --output exports/tag_water-pump/products_with_metafields.json
-  
-  # Single product mode (slower but more accurate)
-  python scripts/fill_category_metafields.py \\
-    --products exports/tag_tv/products_tag_tv_with_lang.json \\
-    --mapping exports/tag_tv/tag_tv_category_mapping.json \\
-    --output exports/tag_tv/products_with_metafields.json \\
-    --mode single
-        """
-    )
-    
+    parser = argparse.ArgumentParser(description="Fill category metafields and optionally export Matrixify CSV")
     parser.add_argument('--products', required=True, help='Path to products JSON file')
     parser.add_argument('--mapping', required=True, help='Path to category mapping JSON file')
-    parser.add_argument('--output', required=True, help='Output file path for products with metafields')
-    parser.add_argument('--model', default='gpt-4o-mini', help='OpenAI model to use (default: gpt-4o-mini)')
-    parser.add_argument('--mode', choices=['batch', 'single', 'parallel'], default='parallel', help='Processing mode (default: parallel)')
-    parser.add_argument('--batch-size', type=int, default=10, help='Batch size for batch mode (default: 10)')
-    parser.add_argument('--workers', type=int, default=5, help='Number of parallel workers (default: 5)')
-    parser.add_argument('--limit', type=int, help='Limit number of products to process (for testing, e.g., --limit 20)')
-    
+    parser.add_argument('--output', required=True, help='Output JSON file for products with metafields')
+    parser.add_argument('--model', default='gpt-4o-mini', help='OpenAI model (default: gpt-4o-mini)')
+    parser.add_argument('--mode', choices=['single', 'parallel'], default='parallel', help='Processing mode')
+    parser.add_argument('--workers', type=int, default=5, help='Parallel workers (default 5)')
+    parser.add_argument('--limit', type=int, help='Limit number of products (testing)')
+    parser.add_argument('--matrixify-csv', help='If set, write Matrixify-ready CSV to this path')
+    parser.add_argument('--handle-field', default='handle', help='Field name in product JSON to use as Handle')
+    parser.add_argument('--use-handles', action='store_true', default=True, help='Convert values to Shopify handles (default: True)')
     args = parser.parse_args()
-    
-    # Validate OpenAI API key
+
     if not os.getenv("OPENAI_API_KEY"):
-        raise SystemExit(" Missing OPENAI_API_KEY in .env")
-    
-    # Load products
-    print(f"Loading products from: {args.products}")
+        raise SystemExit("Missing OPENAI_API_KEY in .env")
+
+    print(f"Loading products: {args.products}")
     products = load_json(args.products)
-    
-    # Limit products if specified (for testing)
     if args.limit and args.limit < len(products):
-        print(f"  Loaded {len(products)} products, limiting to first {args.limit} for testing")
         products = products[:args.limit]
+        print(f"  Limited to {len(products)} products")
     else:
         print(f"  Loaded {len(products)} products")
-    
-    # Load category mapping
-    print(f"\n Loading category mapping from: {args.mapping}")
+
+    print(f"Loading mapping: {args.mapping}")
     mapping = load_json(args.mapping)
     category_name = mapping["category"]["fullName"]
     metafield_definitions = mapping["metafields"]
     print(f"  Category: {category_name}")
     print(f"  Metafields: {len(metafield_definitions)}")
-    
-    if not metafield_definitions:
-        raise SystemExit("No metafield definitions found in mapping file")
-    
-    # Fill metafields
+
     if args.mode == 'parallel':
-        results = fill_metafields_parallel(
-            products=products,
-            metafield_definitions=metafield_definitions,
-            category_name=category_name,
-            model=args.model,
-            max_workers=args.workers
-        )
-    elif args.mode == 'single':
-        results = fill_metafields_single(
-            products=products,
-            metafield_definitions=metafield_definitions,
-            category_name=category_name,
-            model=args.model
-        )
-    else:  # batch mode
-        results = fill_metafields_batch(
-            products=products,
-            metafield_definitions=metafield_definitions,
-            category_name=category_name,
-            model=args.model,
-            batch_size=args.batch_size
-        )
-    
-    # Save results
-    print(f"\nSaving results to: {args.output}")
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    save_json(args.output, results)
-    
-    # Statistics
-    total_products = len(results)
-    products_with_metafields = sum(1 for p in results if p.get("category_metafields"))
-    total_metafields_filled = sum(
-        sum(1 for v in p.get("category_metafields", {}).values() if v is not None)
-        for p in results
-    )
-    
-    print("\n" + "="*60)
-    print("SUMMARY")
-    print("="*60)
-    print(f"Total products processed:     {total_products}")
-    print(f"Products with metafields:     {products_with_metafields}")
-    print(f"Total metafields filled:      {total_metafields_filled}")
-    print(f"Average per product:          {total_metafields_filled/total_products:.1f}")
-    print("="*60)
-    print("\nMetafield filling complete!")
-    print(f"\nNext step: Create Excel file for review")
+        enriched = fill_metafields_parallel(products, metafield_definitions, category_name, model=args.model, max_workers=args.workers)
+    else:
+        enriched = fill_metafields_single(products, metafield_definitions, category_name, model=args.model)
+
+    # Convert values to handles if requested
+    if args.use_handles:
+        print("Converting values to Shopify handles...")
+        try:
+            # Import handle mapping module
+            handles_module_path = Path(__file__).parent / "load_shopify_handles.py"
+            spec = importlib.util.spec_from_file_location("load_shopify_handles", handles_module_path)
+            handles_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(handles_module)
+            
+            handle_map = handles_module.load_shopify_handles()
+            # Create attribute key map: metafield key -> attribute handle
+            attribute_key_map = {}
+            for mf in metafield_definitions:
+                key = mf.get("key", "")
+                # Try to get handle from namespace.key format
+                namespace = mf.get("namespace", "standard")
+                attr_handle = mf.get("handle")
+                if not attr_handle:
+                    # Derive handle from key (replace underscore with dash)
+                    attr_handle = key.replace("_", "-")
+                attribute_key_map[key] = attr_handle
+            
+            converted_count = 0
+            total_converted = 0
+            for product in enriched:
+                if "category_metafields" in product:
+                    original = product["category_metafields"].copy()
+                    product["category_metafields"] = handles_module.map_metafields_to_handles(
+                        product["category_metafields"], 
+                        handle_map, 
+                        attribute_key_map
+                    )
+                    # Count how many values were converted
+                    for key, new_val in product["category_metafields"].items():
+                        old_val = original.get(key)
+                        if new_val != old_val:
+                            total_converted += 1
+                    if product["category_metafields"] != original:
+                        converted_count += 1
+            print(f"  ✓ Converted {total_converted} values to handles for {converted_count} products")
+        except Exception as e:
+            print(f"  ⚠ Warning: Could not convert to handles: {e}")
+            import traceback
+            traceback.print_exc()
+            print("  Continuing with plain text values...")
+
+    print(f"Saving JSON: {args.output}")
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    save_json(args.output, enriched)
+
+    if args.matrixify_csv:
+        print(f"Writing Matrixify CSV: {args.matrixify_csv}")
+        write_matrixify_csv(enriched, metafield_definitions, args.matrixify_csv, handle_field=args.handle_field)
+
+    # Stats
+    total = len(enriched)
+    with_mf = sum(1 for p in enriched if p.get("category_metafields"))
+    filled = 0
+    for p in enriched:
+        filled += sum(1 for v in (p.get("category_metafields") or {}).values() if v not in (None, "", []))
+    print("\n==== SUMMARY ====")
+    print(f"Products processed: {total}")
+    print(f"Products with any metafields: {with_mf}")
+    print(f"Total metafield entries (pre-format): {filled}")
+    print("=================")
 
 
 if __name__ == "__main__":
     main()
-

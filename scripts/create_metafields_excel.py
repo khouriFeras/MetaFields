@@ -7,8 +7,10 @@ Generates a comprehensive Excel file with products and their filled metafields.
 import json
 import os
 import sys
+import re
+import yaml
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from collections import Counter
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -27,6 +29,229 @@ def load_json(file_path: str) -> Any:
     """Load JSON file."""
     with open(file_path, 'r', encoding='utf-8') as f:
         return json.load(f)
+
+
+# Global cache for taxonomy data
+_taxonomy_cache: Optional[Dict] = None
+
+
+def load_taxonomy_data() -> Dict:
+    """
+    Load Shopify taxonomy data (values and attributes) for normalization.
+    Returns a mapping structure for value normalization.
+    """
+    global _taxonomy_cache
+    if _taxonomy_cache is not None:
+        return _taxonomy_cache
+    
+    values_file = Path("data/shopify_values.yml")
+    attributes_file = Path("data/shopify_attributes.yml")
+    
+    if not values_file.exists() or not attributes_file.exists():
+        # Return empty cache if files don't exist
+        _taxonomy_cache = {"values": {}, "attributes": {}}
+        return _taxonomy_cache
+    
+    # Load values
+    with open(values_file, 'r', encoding='utf-8') as f:
+        values_data = yaml.safe_load(f) or []
+    
+    # Build comprehensive value lookup
+    # Maps: handle -> name, friendly_id -> name, name variations -> name
+    value_map = {}
+    for value_item in values_data:
+        handle = value_item.get('handle', '')
+        name = value_item.get('name', '')
+        friendly_id = value_item.get('friendly_id', '')
+        
+        if name:
+            canonical_name = name  # Use the official name as canonical
+            
+            # Map handle to canonical name (e.g., "color__red" -> "Red")
+            if handle:
+                value_map[handle] = canonical_name
+                value_map[handle.lower()] = canonical_name
+                # Also map with underscores and hyphens normalized
+                handle_normalized = handle.replace('_', '-').replace('-', '_')
+                value_map[handle_normalized] = canonical_name
+                value_map[handle_normalized.lower()] = canonical_name
+            
+            # Map friendly_id to canonical name (e.g., "color__red" -> "Red")
+            if friendly_id:
+                value_map[friendly_id] = canonical_name
+                value_map[friendly_id.lower()] = canonical_name
+                # Also map with underscores and hyphens normalized
+                friendly_normalized = friendly_id.replace('_', '-').replace('-', '_')
+                value_map[friendly_normalized] = canonical_name
+                value_map[friendly_normalized.lower()] = canonical_name
+            
+            # Map name variations to canonical name
+            value_map[name.lower()] = canonical_name
+            value_map[name] = canonical_name
+            
+            # Extract value part from handle/friendly_id for partial matching
+            # e.g., "color__red" -> also map "red" -> "Red"
+            if "__" in handle or "__" in friendly_id:
+                source = handle if "__" in handle else friendly_id
+                if "__" in source:
+                    value_part = source.split("__")[-1]
+                    # Normalize value part
+                    value_part_clean = value_part.replace("-", " ").replace("_", " ").strip()
+                    if value_part_clean and len(value_part_clean) >= 2:
+                        value_map[value_part_clean.lower()] = canonical_name
+                        value_map[value_part_clean] = canonical_name
+    
+    # Load attributes to get attribute-to-value mappings
+    with open(attributes_file, 'r', encoding='utf-8') as f:
+        attributes_data = yaml.safe_load(f) or {}
+    
+    attribute_map = {}
+    if 'base_attributes' in attributes_data:
+        for attr in attributes_data['base_attributes']:
+            attr_handle = attr.get('handle', '').replace('_', '-')
+            if attr_handle:
+                attribute_map[attr_handle] = {
+                    'name': attr.get('name', ''),
+                    'values': attr.get('values', [])
+                }
+    
+    _taxonomy_cache = {
+        "values": value_map,
+        "attributes": attribute_map
+    }
+    
+    return _taxonomy_cache
+
+
+def normalize_metafield_value(value: str, metafield: Dict) -> str:
+    """
+    Normalize metafield values using Shopify taxonomy data.
+    Works for all product types by using the actual taxonomy definitions.
+    
+    Uses the metafield key to look up values in the correct attribute context.
+    
+    Examples:
+    - "hdr-format__hdr10" -> looks up in taxonomy -> "HDR 10"
+    - "color__red" -> looks up in taxonomy -> "Red"
+    - "احمر" -> Arabic color -> "Red" (if in taxonomy)
+    """
+    if not value or not isinstance(value, str):
+        return str(value) if value else ""
+    
+    original_value = value.strip()
+    if not original_value:
+        return ""
+    
+    # Load taxonomy data
+    taxonomy = load_taxonomy_data()
+    value_map = taxonomy.get("values", {})
+    attribute_map = taxonomy.get("attributes", {})
+    
+    # Get metafield key to narrow down search (e.g., "color", "hdr-format")
+    metafield_key = metafield.get("key", "").replace("_", "-")
+    
+    # Try to find canonical name from taxonomy
+    value_lower = original_value.lower()
+    
+    # 1. Check if it's already a handle (e.g., "color__red", "hdr-format__hdr10")
+    if "__" in original_value or ("-" in original_value and metafield_key):
+        # Try exact handle match
+        if original_value in value_map:
+            return value_map[original_value]
+        if value_lower in value_map:
+            return value_map[value_lower]
+        
+        # Extract value part from handle (e.g., "color__red" -> "red")
+        if "__" in original_value:
+            parts = original_value.split("__")
+            if len(parts) >= 2:
+                value_part = parts[-1].replace("-", " ").replace("_", " ")
+                # Try to find in taxonomy, prioritizing matches for this attribute
+                for key, canonical_name in value_map.items():
+                    # Check if this value belongs to the current attribute
+                    if metafield_key and metafield_key.replace("-", "__") in key:
+                        if value_part.lower() in key.lower() or key.lower() in value_part.lower():
+                            if len(value_part) >= 3:
+                                return canonical_name
+                    # Fallback: general match
+                    elif value_part.lower() in key.lower() or key.lower() in value_part.lower():
+                        if len(value_part) >= 3:
+                            return canonical_name
+    
+    # 2. Check if it's a friendly_id format
+    if original_value in value_map:
+        return value_map[original_value]
+    if value_lower in value_map:
+        return value_map[value_lower]
+    
+    # 3. Use attribute context to narrow search
+    if metafield_key and metafield_key in attribute_map:
+        attr_info = attribute_map[metafield_key]
+        # Get list of valid values for this attribute
+        valid_value_ids = attr_info.get("values", [])
+        # Try to match against values for this specific attribute
+        for value_id in valid_value_ids:
+            if value_id in value_map:
+                # Check if our value matches this taxonomy value
+                canonical_name = value_map[value_id]
+                canonical_lower = canonical_name.lower()
+                if value_lower == canonical_lower or value_lower in canonical_lower or canonical_lower in value_lower:
+                    return canonical_name
+                # Check handle format
+                if value_id.lower() == value_lower or value_lower in value_id.lower():
+                    return canonical_name
+    
+    # 4. Try partial matching across all taxonomy values
+    normalized_input = re.sub(r'[_\-\s]+', ' ', original_value.lower()).strip()
+    for key, canonical_name in value_map.items():
+        key_normalized = re.sub(r'[_\-\s]+', ' ', key.lower()).strip()
+        # Check if normalized input matches or is contained in key
+        if normalized_input == key_normalized:
+            return canonical_name
+        # Check if one contains the other (for partial matches)
+        if len(normalized_input) >= 3 and len(key_normalized) >= 3:
+            if normalized_input in key_normalized or key_normalized in normalized_input:
+                # Prefer exact matches or longer matches
+                if abs(len(normalized_input) - len(key_normalized)) <= 2:
+                    return canonical_name
+    
+    # 5. Arabic to English mapping (common colors and terms)
+    arabic_to_english = {
+        "أحمر": "Red", "احمر": "Red",
+        "أزرق": "Blue", "ازرق": "Blue",
+        "أخضر": "Green", "اخضر": "Green",
+        "أصفر": "Yellow", "اصفر": "Yellow",
+        "أسود": "Black", "اسود": "Black",
+        "أبيض": "White", "ابيض": "White",
+        "رمادي": "Gray", "بني": "Brown",
+        "برتقالي": "Orange", "وردي": "Pink",
+        "بنفسجي": "Purple", "ذهبي": "Gold",
+        "فضي": "Silver",
+    }
+    
+    if original_value in arabic_to_english:
+        english_value = arabic_to_english[original_value]
+        # Check if English value exists in taxonomy
+        if english_value.lower() in value_map:
+            return value_map[english_value.lower()]
+        return english_value
+    
+    # 6. If not found in taxonomy, do basic normalization
+    # Replace hyphens/underscores with spaces
+    normalized = original_value.replace("_", " ").replace("-", " ")
+    normalized = " ".join(normalized.split())
+    
+    # Add spacing for acronyms (e.g., "HDR10" -> "HDR 10")
+    if len(normalized) > 1:
+        normalized = re.sub(r'([A-Za-z])(\d)', r'\1 \2', normalized)
+        normalized = re.sub(r'(\d)([A-Za-z])', r'\1 \2', normalized)
+        normalized = " ".join(normalized.split())
+    
+    # Capitalize if it's a common word (single word, lowercase)
+    if " " not in normalized and normalized.islower() and len(normalized) > 2:
+        normalized = normalized.capitalize()
+    
+    return normalized
 
 
 def create_summary_sheet(wb: Workbook, products: List[Dict], mapping: Dict) -> None:
@@ -162,15 +387,15 @@ def create_products_sheet(wb: Workbook, products: List[Dict], mapping: Dict) -> 
     
     # Define columns
     base_columns = [
+        "Handle",
         "Title",
         "Product Type",
         "Vendor",
-        "Price Range",
         "Status"
     ]
     
-    # Add metafield columns
-    metafield_columns = [mf["name"] for mf in mapping["metafields"]]
+    # Add metafield columns - use full metafield format
+    metafield_columns = [f"Metafield: shopify.{mf['key']} [{mf['type']}]" for mf in mapping["metafields"]]
     all_columns = base_columns + metafield_columns
     
     # Write headers
@@ -184,10 +409,10 @@ def create_products_sheet(wb: Workbook, products: List[Dict], mapping: Dict) -> 
     # Write product data
     for row_idx, product in enumerate(products, 2):
         # Base data
-        ws.cell(row=row_idx, column=1, value=product.get('title', ''))
-        ws.cell(row=row_idx, column=2, value=product.get('productType', ''))
-        ws.cell(row=row_idx, column=3, value=product.get('vendor', ''))
-        ws.cell(row=row_idx, column=4, value=product.get('priceRange', ''))
+        ws.cell(row=row_idx, column=1, value=product.get('handle', ''))
+        ws.cell(row=row_idx, column=2, value=product.get('title', ''))
+        ws.cell(row=row_idx, column=3, value=product.get('productType', ''))
+        ws.cell(row=row_idx, column=4, value=product.get('vendor', ''))
         ws.cell(row=row_idx, column=5, value=product.get('status', ''))
         
         # Metafield data
@@ -199,11 +424,13 @@ def create_products_sheet(wb: Workbook, products: List[Dict], mapping: Dict) -> 
             if value is None:
                 display_value = ""
             elif isinstance(value, list):
-                display_value = ", ".join(str(v) for v in value)
+                # Normalize each value in the list
+                normalized_values = [normalize_metafield_value(str(v), mf) for v in value if v]
+                display_value = ", ".join(normalized_values)
             elif isinstance(value, dict):
                 display_value = json.dumps(value)
             else:
-                display_value = str(value)
+                display_value = normalize_metafield_value(str(value), mf)
             
             cell = ws.cell(row=row_idx, column=col_idx, value=display_value)
             
@@ -319,7 +546,7 @@ Examples:
     products = load_json(args.products)
     print(f"Loaded {len(products)} products")
     
-    print(f"\n📂 Loading category mapping from: {args.mapping}")
+    print(f"\nLoading category mapping from: {args.mapping}")
     mapping = load_json(args.mapping)
     print(f" Category: {mapping['category']['fullName']}")
     print(f"Metafields: {len(mapping['metafields'])}")
