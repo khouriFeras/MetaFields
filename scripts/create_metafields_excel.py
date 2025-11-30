@@ -394,8 +394,8 @@ def create_products_sheet(wb: Workbook, products: List[Dict], mapping: Dict) -> 
         "Status"
     ]
     
-    # Add metafield columns - use full metafield format
-    metafield_columns = [f"Metafield: shopify.{mf['key']} [{mf['type']}]" for mf in mapping["metafields"]]
+    # Add metafield columns - use Arabic name from metafield definition
+    metafield_columns = [mf.get('name', f"Metafield: shopify.{mf['key']} [{mf['type']}]") for mf in mapping["metafields"]]
     all_columns = base_columns + metafield_columns
     
     # Write headers

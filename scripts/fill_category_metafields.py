@@ -342,6 +342,12 @@ def fill_metafields_single(products: List[Dict], metafield_definitions: List[Dic
         product_info = extract_product_info(product)
         prompt = f"""You are filling Shopify category metafields for a product.
 
+⚠️⚠️⚠️ CRITICAL: ABSOLUTELY NO UNIT CONVERSIONS ⚠️⚠️⚠️
+- If product says "12 inches" → return "12" (NOT 30.48, NOT 30, NOT any conversion)
+- If product says "30 cm" → return "30" (NOT 11.8, NOT 12, NOT any conversion)
+- Extract ONLY the number as written - NEVER convert between units
+- This is the MOST IMPORTANT rule - violating it will cause errors
+
 CATEGORY: {category_name}
 
 METAFIELDS TO FILL:
@@ -390,13 +396,18 @@ CRITICAL RULES - NO HALLUCINATION:
 
 7. For single values: return the exact value as stated, or null if not found.
 
-8. CRITICAL - UNIT HANDLING:
+8. CRITICAL - UNIT HANDLING - NO CONVERSIONS:
    - Extract the EXACT NUMBER as stated in the product (title, description, etc.)
-   - DO NOT convert units (liters to gallons, kg to lbs, etc.)
+   - DO NOT convert units (liters to gallons, kg to lbs, inches to cm, cm to inches, etc.)
+   - DO NOT convert between measurement systems (imperial to metric or vice versa)
    - If product says "80 لتر" (80 liters) → extract "80" (the number, not converted)
    - If product says "50 gallons" → extract "50" (the number)
+   - If product says "12 inches" → extract "12" (NOT converted to 30.48 cm)
+   - If product says "30 cm" → extract "30" (NOT converted to 11.8 inches)
+   - If metafield name says "blade-diameter-cm" but product says "12 inches" → extract "12" (NOT 30.48)
    - The metafield name may indicate the expected unit, but extract the literal number from the product
    - Only use the number that appears in the product data itself
+   - NEVER perform unit conversions - use the exact number as written
 
 EXAMPLES:
 - Title: "كيزر كهرباء ايطالي 80 لتر نوع اريستون- ايكو"
@@ -409,6 +420,8 @@ EXAMPLES:
 - If description says "140 watts" → extract "140" for power
 - If product title says "80 لتر" (80 liters) and metafield is capacity-gallons → extract "80" (NOT converted to 21)
 - If product says "50 kg" and metafield expects lbs → extract "50" (NOT converted to 110)
+- If product says "12 inches" and metafield is blade-diameter-cm → extract "12" (NOT converted to 30.48)
+- If product says "30 cm" and metafield expects inches → extract "30" (NOT converted to 11.8)
 - If NO mention of capacity → use null (NOT a guessed value)
 
 IMPORTANT: The TITLE is often the most reliable source for key specifications. Read it word by word, including Arabic text.
@@ -422,7 +435,7 @@ Return ONLY valid JSON (no comments allowed):
   }}
 }}"""
         try:
-            txt = call_llm(model, system="You extract ONLY explicitly stated product information. NEVER guess or infer values. Extract EXACT numbers as stated - DO NOT convert units (liters to gallons, kg to lbs, etc.). Read the TITLE carefully first - it often contains key specifications. Use null when information is not found in the product data. Return valid JSON.", user=prompt)
+            txt = call_llm(model, system="⚠️ CRITICAL: Extract EXACT numbers as written in product data. ABSOLUTELY NO UNIT CONVERSIONS. If product says '12 inches', return '12' NOT '30.48'. If product says '30 cm', return '30' NOT '11.8'. NEVER convert between units (inches/cm, liters/gallons, kg/lbs, etc.). Extract ONLY explicitly stated information. NEVER guess values. Read TITLE first - it contains key specs. Use null when information not found. Return valid JSON.", user=prompt)
             result = json.loads(txt)
             results.append(merge_llm_result_into_product(product, result, metafield_definitions))
         except Exception as e:
@@ -440,6 +453,12 @@ def fill_metafields_parallel(products: List[Dict], metafield_definitions: List[D
         product_info = extract_product_info(p)
         prompt = f"""You are filling Shopify category metafields for a product.
 
+ CRITICAL: ABSOLUTELY NO UNIT CONVERSIONS 
+- If product says "12 inches" → return "12" (NOT 30.48, NOT 30, NOT any conversion)
+- If product says "30 cm" → return "30" (NOT 11.8, NOT 12, NOT any conversion)
+- Extract ONLY the number as written - NEVER convert between units
+- This is the MOST IMPORTANT rule - violating it will cause errors
+
 CATEGORY: {category_name}
 
 METAFIELDS TO FILL:
@@ -488,13 +507,18 @@ CRITICAL RULES - NO HALLUCINATION:
 
 7. For single values: return the exact value as stated, or null if not found.
 
-8. CRITICAL - UNIT HANDLING:
+8. CRITICAL - UNIT HANDLING - NO CONVERSIONS:
    - Extract the EXACT NUMBER as stated in the product (title, description, etc.)
-   - DO NOT convert units (liters to gallons, kg to lbs, etc.)
+   - DO NOT convert units (liters to gallons, kg to lbs, inches to cm, cm to inches, etc.)
+   - DO NOT convert between measurement systems (imperial to metric or vice versa)
    - If product says "80 لتر" (80 liters) → extract "80" (the number, not converted)
    - If product says "50 gallons" → extract "50" (the number)
+   - If product says "12 inches" → extract "12" (NOT converted to 30.48 cm)
+   - If product says "30 cm" → extract "30" (NOT converted to 11.8 inches)
+   - If metafield name says "blade-diameter-cm" but product says "12 inches" → extract "12" (NOT 30.48)
    - The metafield name may indicate the expected unit, but extract the literal number from the product
    - Only use the number that appears in the product data itself
+   - NEVER perform unit conversions - use the exact number as written
 
 EXAMPLES:
 - Title: "كيزر كهرباء ايطالي 80 لتر نوع اريستون- ايكو"
@@ -507,6 +531,8 @@ EXAMPLES:
 - If description says "140 watts" → extract "140" for power
 - If product title says "80 لتر" (80 liters) and metafield is capacity-gallons → extract "80" (NOT converted to 21)
 - If product says "50 kg" and metafield expects lbs → extract "50" (NOT converted to 110)
+- If product says "12 inches" and metafield is blade-diameter-cm → extract "12" (NOT converted to 30.48)
+- If product says "30 cm" and metafield expects inches → extract "30" (NOT converted to 11.8)
 - If NO mention of capacity → use null (NOT a guessed value)
 
 IMPORTANT: The TITLE is often the most reliable source for key specifications. Read it word by word, including Arabic text.
@@ -520,7 +546,7 @@ Return ONLY valid JSON (no comments allowed):
   }}
 }}"""
         try:
-            txt = call_llm(model, system="You extract ONLY explicitly stated product information. NEVER guess or infer values. Extract EXACT numbers as stated - DO NOT convert units (liters to gallons, kg to lbs, etc.). Read the TITLE carefully first - it often contains key specifications. Use null when information is not found in the product data. Return valid JSON.", user=prompt)
+            txt = call_llm(model, system="⚠️ CRITICAL: Extract EXACT numbers as written in product data. ABSOLUTELY NO UNIT CONVERSIONS. If product says '12 inches', return '12' NOT '30.48'. If product says '30 cm', return '30' NOT '11.8'. NEVER convert between units (inches/cm, liters/gallons, kg/lbs, etc.). Extract ONLY explicitly stated information. NEVER guess values. Read TITLE first - it contains key specs. Use null when information not found. Return valid JSON.", user=prompt)
             result = json.loads(txt)
             return merge_llm_result_into_product(p, result, metafield_definitions)
         except Exception as e:

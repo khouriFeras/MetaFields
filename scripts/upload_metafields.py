@@ -10,7 +10,8 @@ Category metafields (taxonomy attributes) are Shopify's standard product metafie
 already exist in the taxonomy system. We simply fill in values for products using these
 existing definitions.
 
-Supports Arabic translations for bilingual filters.
+
+
 """
 import json
 import os
@@ -117,21 +118,45 @@ def prepare_metafield_input(key: str, value: Any, metafield_type: str, namespace
     # we keep it as "standard" when uploading values (Shopify expects this for taxonomy attributes)
     
     # Handle null/empty values - should be filtered out before calling this function
+    # But preserve "NA" values as strings
     if value is None:
         raise ValueError(f"Cannot prepare metafield input for null value: {namespace}.{key}")
     
     # Convert value based on type
-    if metafield_type == "list.single_line_text_field":
+    # Preserve "NA" values
+    is_na = isinstance(value, str) and value.strip().upper() == 'NA'
+    if is_na:
+        if metafield_type == "list.single_line_text_field":
+            metafield_value = json.dumps(['NA'])
+            value_type = "list.single_line_text_field"
+        else:
+            metafield_value = 'NA'
+            value_type = "single_line_text_field"
+    elif metafield_type == "list.single_line_text_field":
         # List type - convert to JSON array string
         if isinstance(value, list):
-            # Ensure all items are strings and filter out None values
-            metafield_value = json.dumps([str(item) for item in value if item is not None])
+            # Ensure all items are strings and filter out None values, preserve "NA"
+            items = []
+            for item in value:
+                if item is not None:
+                    if isinstance(item, str) and item.strip().upper() == 'NA':
+                        items.append('NA')
+                    else:
+                        items.append(str(item))
+            metafield_value = json.dumps(items)
         elif isinstance(value, str):
             # If it's already a JSON string, validate it
             try:
                 parsed = json.loads(value)
                 if isinstance(parsed, list):
-                    metafield_value = json.dumps([str(item) for item in parsed if item is not None])
+                    items = []
+                    for item in parsed:
+                        if item is not None:
+                            if isinstance(item, str) and item.strip().upper() == 'NA':
+                                items.append('NA')
+                            else:
+                                items.append(str(item))
+                    metafield_value = json.dumps(items)
                 else:
                     metafield_value = json.dumps([str(value)])
             except (json.JSONDecodeError, TypeError):
@@ -141,14 +166,64 @@ def prepare_metafield_input(key: str, value: Any, metafield_type: str, namespace
             # Single value, wrap in array
             metafield_value = json.dumps([str(value)])
         value_type = "list.single_line_text_field"
+    elif metafield_type == "number_integer":
+        # Integer type - convert to integer, then to string (Shopify requires string values)
+        if isinstance(value, list):
+            # If list type but type is integer, take first item
+            try:
+                int_val = int(float(value[0])) if value else 0
+            except (ValueError, TypeError):
+                int_val = 0
+        else:
+            try:
+                int_val = int(float(value)) if value is not None else 0
+            except (ValueError, TypeError):
+                int_val = 0
+        # Shopify GraphQL requires all metafield values as strings, even for number types
+        metafield_value = str(int_val)
+        value_type = "number_integer"
+    elif metafield_type == "number_decimal":
+        # Decimal type - convert to float, then to string (Shopify requires string values)
+        if isinstance(value, list):
+            # If list type but type is decimal, take first item
+            try:
+                float_val = float(value[0]) if value else 0.0
+            except (ValueError, TypeError):
+                float_val = 0.0
+        else:
+            try:
+                float_val = float(value) if value is not None else 0.0
+            except (ValueError, TypeError):
+                float_val = 0.0
+        # Shopify GraphQL requires all metafield values as strings, even for number types
+        metafield_value = str(float_val)
+        value_type = "number_decimal"
+    elif metafield_type == "boolean":
+        # Boolean type - convert to boolean, then to string (Shopify requires string values)
+        if isinstance(value, list):
+            # If list type but type is boolean, take first item
+            val = value[0] if value else False
+        else:
+            val = value
+        
+        if isinstance(val, bool):
+            bool_val = val
+        elif isinstance(val, str):
+            bool_val = val.lower() in ['true', '1', 'yes', 'نعم']
+        else:
+            bool_val = bool(val)
+        # Shopify GraphQL requires all metafield values as strings, even for boolean types
+        metafield_value = str(bool_val).lower()
+        value_type = "boolean"
     else:
-        # Single value type - ensure it's a string
+        # Single value text type - ensure it's a string
         if isinstance(value, list):
             # If list type but type is single, take first item
             metafield_value = str(value[0]) if value else ""
         else:
             metafield_value = str(value) if value is not None else ""
-        value_type = "single_line_text_field"
+        # Use the actual metafield_type from definition, default to single_line_text_field
+        value_type = metafield_type if metafield_type else "single_line_text_field"
     
     return {
         "namespace": namespace,
@@ -337,7 +412,13 @@ def update_product_metafields(
     """
     # Create metafield type and namespace mapping
     metafield_types = {mf['key']: mf['type'] for mf in metafield_definitions}
-    metafield_namespaces = {mf['key']: mf.get('namespace', 'standard') for mf in metafield_definitions}
+    metafield_namespaces = {}
+    for mf in metafield_definitions:
+        namespace = mf.get('namespace', 'custom')
+        # Fix: "shopify" namespace is reserved, use "custom" instead
+        if namespace == 'shopify':
+            namespace = 'custom'
+        metafield_namespaces[mf['key']] = namespace
     
     # Create a mapping from display name (with spaces/capitals) to correct key (with hyphens)
     # This handles JSON files that have keys like "Audio technology" instead of "audio-technology"
@@ -351,12 +432,21 @@ def update_product_metafields(
     # Prepare metafields input
     metafields_input = []
     for key, value in metafields_data.items():
-        if value is not None and value != "":  # Skip null and empty values
-            # Convert key to correct format if needed
-            correct_key = key_mapping.get(key, key.lower().replace(" ", "-").replace("_", "-"))
-            mf_type = metafield_types.get(correct_key, "single_line_text_field")
-            namespace = metafield_namespaces.get(correct_key, "standard")
-            metafields_input.append(prepare_metafield_input(correct_key, value, mf_type, namespace))
+        # Skip null and empty values, but preserve "NA" values
+        if value is None:
+            continue
+        if isinstance(value, str) and value.strip() == "":
+            continue
+        
+        # Preserve "NA" values
+        if isinstance(value, str) and value.strip().upper() == 'NA':
+            value = 'NA'
+        
+        # Convert key to correct format if needed
+        correct_key = key_mapping.get(key, key.lower().replace(" ", "-").replace("_", "-"))
+        mf_type = metafield_types.get(correct_key, "single_line_text_field")
+        namespace = metafield_namespaces.get(correct_key, "standard")
+        metafields_input.append(prepare_metafield_input(correct_key, value, mf_type, namespace))
     
     # Validate metafields_input is not empty
     if not metafields_input:
@@ -564,39 +654,9 @@ def create_metafield_definition(
         return False, str(e)
 
 
-def register_translations(
-    resource_id: str,
-    translations_map: Dict[str, Dict[str, str]],
-    metafields_data: Dict[str, Any]
-) -> None:
-    """
-    Register Arabic translations for metafield values.
-    
-    Args:
-        resource_id: Resource GID (product metafield GID)
-        translations_map: Translation mapping from metafield_translations.json
-        metafields_data: The metafield data to translate
-    """
-    # This function will register translations for each metafield value
-    # Shopify's translation API requires the metafield GID which we get after creating the metafield
-    
-    # For now, we'll prepare the translations structure
-    # In practice, you'd need to:
-    # 1. Create metafields first
-    # 2. Get their GIDs
-    # 3. Register translations using translationsRegister mutation
-    
-    # This is a complex process that requires multiple API calls
-    # For the initial implementation, we'll focus on uploading English values
-    # and add translation support in a follow-up iteration
-    
-    pass
-
-
 def upload_metafields(
     products_file: str,
     mapping_file: str,
-    translations_file: str,
     limit: Optional[int] = None,
     dry_run: bool = False
 ) -> Dict:
@@ -606,7 +666,6 @@ def upload_metafields(
     Args:
         products_file: Path to products JSON with metafields
         mapping_file: Path to category mapping JSON
-        translations_file: Path to translations JSON
         limit: Limit number of products to process (for testing)
         dry_run: If True, don't actually upload, just show what would be uploaded
     
@@ -627,7 +686,6 @@ def upload_metafields(
     print(f"\nLoading data...")
     products = load_json(products_file)
     mapping = load_json(mapping_file)
-    translations = load_json(translations_file) if translations_file else {}
     
     print(f"   Loaded {len(products)} products")
     print(f"   Category: {mapping['category']['fullName']}")
@@ -640,6 +698,92 @@ def upload_metafields(
     
     if dry_run:
         print(f"\n DRY RUN MODE - No changes will be made")
+    
+    # Check and create definitions BEFORE uploading (if not dry run)
+    if not dry_run:
+        print("\n" + "=" * 60)
+        print(" CHECKING AND CREATING DEFINITIONS")
+        print("=" * 60)
+        print("\nNote: Definitions must exist before uploading metafield values.")
+        print("      We'll check if they exist and create them if missing.\n")
+        
+        definitions_found = 0
+        definitions_created = 0
+        definitions_failed = 0
+        
+        for metafield_def in mapping['metafields']:
+            key = metafield_def['key']
+            name = metafield_def['name']
+            namespace = metafield_def.get('namespace', 'custom')
+            # Fix: "shopify" namespace is reserved, use "custom" instead
+            if namespace == 'shopify':
+                namespace = 'custom'
+                print(f"  [INFO] {name} - Changed namespace from 'shopify' to 'custom' (shopify is reserved)")
+            
+            mf_type = metafield_def.get('type', 'single_line_text_field')
+            description = metafield_def.get('description', '')
+            
+            # Check if definition exists
+            query = """
+            query getMetafieldDefinition($namespace: String!, $key: String!, $ownerType: MetafieldOwnerType!) {
+              metafieldDefinitions(first: 1, ownerType: $ownerType, namespace: $namespace, key: $key) {
+                edges {
+                  node {
+                    id
+                    name
+                  }
+                }
+              }
+            }
+            """
+            
+            try:
+                result = graphql_request(query, {
+                    "namespace": namespace,
+                    "key": key,
+                    "ownerType": "PRODUCT"
+                })
+                
+                definitions = result.get("data", {}).get("metafieldDefinitions", {}).get("edges", [])
+                
+                if definitions:
+                    print(f"  [OK] {name} ({namespace}.{key}) - Definition exists")
+                    definitions_found += 1
+                else:
+                    # Definition doesn't exist - try to create it
+                    print(f"  [CREATE] {name} ({namespace}.{key}) - Creating definition...")
+                    success, error_msg = create_metafield_definition(
+                        namespace=namespace,
+                        key=key,
+                        name=name,
+                        metafield_type=mf_type,
+                        description=description
+                    )
+                    
+                    if success:
+                        print(f"         [OK] Created successfully")
+                        definitions_created += 1
+                        definitions_found += 1
+                    else:
+                        print(f"         [ERROR] Failed: {error_msg}")
+                        definitions_failed += 1
+                
+            except Exception as e:
+                print(f"  [ERROR] {name} - Could not check/create: {str(e)}")
+                definitions_failed += 1
+            
+            time.sleep(0.3)  # Rate limiting
+        
+        print(f"\n  Summary:")
+        print(f"    Found existing: {definitions_found - definitions_created}")
+        print(f"    Created: {definitions_created}")
+        print(f"    Failed: {definitions_failed}")
+        print(f"    Total: {definitions_found}/{len(mapping['metafields'])} definitions available")
+        
+        if definitions_found < len(mapping['metafields']):
+            print(f"\n  ⚠️ Warning: Some definitions could not be found or created.")
+            print(f"        Upload may fail for metafields without definitions.")
+        print("\n" + "=" * 60)
     
     # Upload metafields
     stats = {
@@ -667,12 +811,22 @@ def upload_metafields(
             stats["skipped"] += 1
             continue
         
-        # Show metafields to upload
-        filled_metafields = {k: v for k, v in metafields_data.items() if v is not None}
+        # Show metafields to upload (including "NA" values)
+        filled_metafields = {}
+        for k, v in metafields_data.items():
+            if v is not None:
+                # Include "NA" values and non-empty strings
+                if isinstance(v, str):
+                    if v.strip().upper() == 'NA' or v.strip() != '':
+                        filled_metafields[k] = v
+                else:
+                    filled_metafields[k] = v
+        
         print(f"  Metafields to upload: {len(filled_metafields)}")
         for key, value in filled_metafields.items():
             value_str = str(value)[:60]
-            print(f"    ΓÇó {key}: {value_str}")
+            value_display = "NA" if (isinstance(value, str) and value.strip().upper() == 'NA') else value_str
+            print(f"    • {key}: {value_display}")
         
         if dry_run:
             print(f"  [DRY RUN] Would upload {len(filled_metafields)} metafields")
@@ -683,7 +837,14 @@ def upload_metafields(
         try:
             # Prepare expected metafields for verification
             metafield_types = {mf['key']: mf['type'] for mf in mapping['metafields']}
-            metafield_namespaces = {mf['key']: mf.get('namespace', 'standard') for mf in mapping['metafields']}
+            metafield_namespaces = {}
+            for mf in mapping['metafields']:
+                namespace = mf.get('namespace', 'custom')
+                # Fix: "shopify" namespace is reserved, use "custom" instead
+                if namespace == 'shopify':
+                    namespace = 'custom'
+                metafield_namespaces[mf['key']] = namespace
+            
             key_mapping = {}
             for mf in mapping['metafields']:
                 key_mapping[mf['name']] = mf['key']
@@ -692,7 +853,10 @@ def upload_metafields(
             expected_metafields = []
             for key, value in filled_metafields.items():
                 correct_key = key_mapping.get(key, key.lower().replace(" ", "-").replace("_", "-"))
-                namespace = metafield_namespaces.get(correct_key, "standard")
+                namespace = metafield_namespaces.get(correct_key, "custom")
+                # Fix: "shopify" namespace is reserved, use "custom" instead
+                if namespace == 'shopify':
+                    namespace = 'custom'
                 expected_metafields.append({
                     "namespace": namespace,
                     "key": correct_key,
@@ -751,8 +915,7 @@ def upload_metafields(
                 "error": str(e)
             })
     
-    # Check and create definitions if they don't exist
-    if not dry_run and stats["success"] > 0:
+    # (Definitions are now created BEFORE upload loop - see above)
         print("\n" + "=" * 60)
         print(" CHECKING AND CREATING DEFINITIONS")
         print("=" * 60)
@@ -869,17 +1032,10 @@ def upload_metafields(
         print("  3.  DONE: Storefront access enabled")
         print("  4. TODO: Go to Online Store -> Themes -> Customize")
         print("  5. TODO: Add 'Product filters' block to collection pages")
-        print("  6. TODO: Add Arabic translations (Settings -> Languages -> Translate)")
         print("\n To view metafields in Shopify Admin:")
         print("  - Go to Products -> Open a product")
         print("  - Scroll down to 'Metafields' section")
         print("  - Click 'Show all metafields' to see all metafields")
-        if translations_file:
-            print("\n For Arabic translations:")
-            print("  English values are uploaded. Add Arabic translations via:")
-            print("  - Shopify Admin -> Settings -> Languages -> Translate")
-            print("  - Find 'Product metafields' and translate each value")
-            print(f"  - Use the mapping in: {translations_file}")
     
     return stats
 
@@ -889,7 +1045,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="Upload category metafields to Shopify products with translations",
+        description="Upload category metafields to Shopify products",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -905,20 +1061,17 @@ Examples:
   python scripts/upload_metafields.py \\
     --products exports/tag_Power-bank/products_with_metafields_v2.json \\
     --mapping exports/tag_Power-bank/gpt-4o-mini_20251013_120537/tag_Power-bank_category_mapping.json \\
-    --translations data/metafield_translations.json \\
     --limit 2
   
   # Upload all products
   python scripts/upload_metafields.py \\
     --products exports/tag_Power-bank/products_with_metafields_v2.json \\
-    --mapping exports/tag_Power-bank/gpt-4o-mini_20251013_120537/tag_Power-bank_category_mapping.json \\
-    --translations data/metafield_translations.json
+    --mapping exports/tag_Power-bank/gpt-4o-mini_20251013_120537/tag_Power-bank_category_mapping.json
         """
     )
     
     parser.add_argument('--products', required=True, help='Path to products JSON with metafields')
     parser.add_argument('--mapping', required=True, help='Path to category mapping JSON')
-    parser.add_argument('--translations', required=False, help='Path to translations JSON (optional)')
     parser.add_argument('--limit', type=int, help='Limit number of products (for testing)')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be uploaded without actually uploading')
     
@@ -927,7 +1080,6 @@ Examples:
     upload_metafields(
         products_file=args.products,
         mapping_file=args.mapping,
-        translations_file=args.translations,
         limit=args.limit,
         dry_run=args.dry_run
     )

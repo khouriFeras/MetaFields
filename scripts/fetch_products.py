@@ -528,20 +528,10 @@ def fetch_collection_products(collection_identifier: str) -> List[Dict]:
     collections = fetch_collections()
     
     collection = None
-    # Normalize the search term (case-insensitive, strip whitespace)
-    search_term = collection_identifier.strip()
-    search_term_lower = search_term.lower()
-    
     for coll in collections:
-        coll_handle = coll.get("handle", "").strip().lower()
-        coll_title = coll.get("title", "").strip().lower()
-        coll_id = coll.get("id", "").strip()
-        
-        if (coll_handle == search_term_lower or 
-            coll_title == search_term_lower or 
-            coll_id == collection_identifier or
-            coll.get("handle") == collection_identifier or
-            coll.get("title") == collection_identifier):
+        if (coll["handle"] == collection_identifier or 
+            coll["id"] == collection_identifier or 
+            coll["title"] == collection_identifier):
             collection = coll
             break
     
@@ -823,15 +813,8 @@ Examples:
     
     subparsers = parser.add_subparsers(dest='command', help='Fetch method')
     
-    # Common arguments function
-    def add_common_args(subparser):
-        subparser.add_argument('--output-dir', default=OUTPUT_DIR, help='Output directory')
-        subparser.add_argument('--no-csv', action='store_true', help='Skip CSV export')
-        subparser.add_argument('--no-xlsx', action='store_true', help='Skip XLSX export')
-    
     # All products command
     all_parser = subparsers.add_parser('all', help='Fetch all products')
-    add_common_args(all_parser)
     
     # Single product command
     single_parser = subparsers.add_parser('single', help='Fetch single product')
@@ -839,21 +822,22 @@ Examples:
     single_group.add_argument('--handle', help='Product handle')
     single_group.add_argument('--id', help='Product ID')
     single_group.add_argument('--sku', help='Product SKU')
-    add_common_args(single_parser)
     
     # Tag command
     tag_parser = subparsers.add_parser('tag', help='Fetch products by tag')
     tag_parser.add_argument('--name', required=True, help='Tag name')
-    add_common_args(tag_parser)
     
     # Collection command
     collection_parser = subparsers.add_parser('collection', help='Fetch products from collection')
     collection_group = collection_parser.add_mutually_exclusive_group(required=True)
     collection_group.add_argument('--handle', help='Collection handle')
     collection_group.add_argument('--title', help='Collection title')
-    collection_group.add_argument('--name', help='Collection name/title (alias for --title)')
     collection_group.add_argument('--id', help='Collection ID')
-    add_common_args(collection_parser)
+    
+    # Common arguments
+    parser.add_argument('--output-dir', default=OUTPUT_DIR, help='Output directory')
+    parser.add_argument('--no-csv', action='store_true', help='Skip CSV export')
+    parser.add_argument('--no-xlsx', action='store_true', help='Skip XLSX export')
     
     args = parser.parse_args()
     
@@ -913,11 +897,6 @@ Examples:
         elif args.title:
             products = fetch_collection_products(args.title)
             safe_name = args.title.replace(' ', '_').replace('/', '_')
-            filename_prefix = f"collection_{safe_name}"
-            subfolder_name = safe_name
-        elif args.name:
-            products = fetch_collection_products(args.name)
-            safe_name = args.name.replace(' ', '_').replace('/', '_')
             filename_prefix = f"collection_{safe_name}"
             subfolder_name = safe_name
         elif args.id:
