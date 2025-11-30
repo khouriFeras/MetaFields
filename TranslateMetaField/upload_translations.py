@@ -559,12 +559,26 @@ def process_product_value_translations(
         return
 
     # Build mapping: ar -> en
+    # Handle both string values and JSON array values
     ar_to_en: Dict[str, str] = {}
     for item in allowed_values_en:
-        v_ar = (item.get("value_ar") or "").strip()
+        v_ar_raw = (item.get("value_ar") or "").strip()
         v_en = (item.get("value_en") or "").strip()
-        if v_ar and v_en:
-            ar_to_en[v_ar] = v_en
+        if v_ar_raw and v_en:
+            # Try to parse as JSON array - if it's a JSON array string like "[\"غاز\"]"
+            # extract the actual value "غاز"
+            try:
+                parsed_ar = json.loads(v_ar_raw)
+                if isinstance(parsed_ar, list) and len(parsed_ar) > 0:
+                    # Map the actual Arabic value (e.g., "غاز") to English
+                    ar_to_en[str(parsed_ar[0])] = v_en
+                    # Also map the JSON string version for direct matching
+                    ar_to_en[v_ar_raw] = json.dumps([v_en], ensure_ascii=False)
+                else:
+                    ar_to_en[v_ar_raw] = v_en
+            except (json.JSONDecodeError, TypeError):
+                # Not a JSON array, treat as simple string
+                ar_to_en[v_ar_raw] = v_en
 
     if not ar_to_en:
         print(f"   Empty ar_to_en mapping for {namespace}.{key}, skipping product value translations.")
@@ -593,13 +607,38 @@ def process_product_value_translations(
             skipped_count += 1
             continue
 
-        # Check if current value has a translation
-        if current_value in ar_to_en:
-            english_value = ar_to_en[current_value]
-            
+        # Check if current value is a JSON array (for list-type metafields)
+        # or a simple string value
+        english_value = None
+        is_json_array = False
+        
+        # Try to parse as JSON array first
+        try:
+            parsed_value = json.loads(current_value)
+            if isinstance(parsed_value, list):
+                is_json_array = True
+                # Translate each item in the array
+                translated_list = []
+                for item in parsed_value:
+                    item_str = str(item).strip()
+                    if item_str in ar_to_en:
+                        translated_list.append(ar_to_en[item_str])
+                    else:
+                        # Keep original if no translation found
+                        translated_list.append(item_str)
+                # Keep as JSON array string
+                english_value = json.dumps(translated_list, ensure_ascii=False)
+        except (json.JSONDecodeError, TypeError):
+            # Not a JSON array, treat as simple string
+            if current_value in ar_to_en:
+                english_value = ar_to_en[current_value]
+        
+        if english_value:
             if not dry_run:
                 print(f"    Product: {title!r} ({pid[:20]}...)")
-                print(f"      {namespace}.{key}: '{current_value}' -> '{english_value}'")
+                value_display = current_value[:50] + "..." if len(current_value) > 50 else current_value
+                english_display = english_value[:50] + "..." if len(english_value) > 50 else english_value
+                print(f"      {namespace}.{key}: '{value_display}' -> '{english_display}'")
                 
                 # Get translatableContentDigest first
                 digest = get_translatable_content_digest(metafield_id)
